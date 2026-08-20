@@ -14,12 +14,291 @@ $("generate").onclick=async()=>{if(!file)return;$("generate").disabled=true;$("s
 function renderCards(){$("results").innerHTML=clips.map((c,i)=>`<article class="clip"><div class="row"><div><b>Clip ${i+1}</b><div class="small">${fmt(c.start)} – ${fmt(c.end)} · ${(c.end-c.start).toFixed(1)}s</div></div><div class="score">${c.score}/100</div></div><video controls playsinline preload="metadata" src="${url}#t=${c.start},${c.end}"></video><div style="margin-top:7px"><span class="badge">${esc($("aspect").selectedOptions[0].text)}</span><span class="badge">${esc($("layout").selectedOptions[0].text)}</span>${c.words?'<span class="badge">Captions ✓</span>':''}</div><div class="row" style="margin-top:10px"><button class="secondary" onclick="window.openEdit(${i})">Edit clip</button><button class="green" onclick="window.quickExport(${i},this)">Create & Download</button></div><div id="cardStatus${i}" class="small"></div></article>`).join("")}
 window.openEdit=async i=>{editIndex=i;const c=clips[i];$("editTitle").textContent=`Edit Clip ${i+1}`;$("editStart").value=c.start.toFixed(1);$("editEnd").value=c.end.toFixed(1);$("transcript").textContent=c.transcript||"Captions not prepared yet.";const v=$("editVideo");v.src=url;await meta(v).catch(()=>{});v.currentTime=c.start;$("modal").classList.remove("hidden")};$("close").onclick=()=>{$("editVideo").pause();$("modal").classList.add("hidden")};$("applyTrim").onclick=()=>{if(editIndex<0)return;const c=clips[editIndex];c.start=Math.max(0,Math.min(duration-.2,+$("editStart").value));c.end=Math.max(c.start+.2,Math.min(duration,+$("editEnd").value));c.words=null;c.transcript="";$("transcript").textContent="Trim changed. Prepare captions again if needed.";renderCards()};
 async function audio16k(start,end,cb){const input=new Input({formats:ALL_FORMATS,source:new BlobSource(file)});try{const track=await input.getPrimaryAudioTrack();if(!track)throw new Error("No audio track found");const sink=new AudioBufferSink(track),parts=[];let total=0,sr=0;for await(const {buffer,timestamp} of sink.buffers(start,end)){sr=buffer.sampleRate;const mono=new Float32Array(buffer.length);for(let ch=0;ch<buffer.numberOfChannels;ch++){const d=buffer.getChannelData(ch);for(let i=0;i<mono.length;i++)mono[i]+=d[i]/buffer.numberOfChannels}parts.push(mono);total+=mono.length;cb(`Extracting audio… ${Math.round(Math.max(0,Math.min(1,(timestamp-start)/(end-start)))*100)}%`)}if(!total)throw new Error("Audio could not be decoded");const all=new Float32Array(total);let o=0;for(const p of parts){all.set(p,o);o+=p.length}if(sr===16000)return all;const ratio=sr/16000,n=Math.floor(all.length/ratio),out=new Float32Array(n);for(let i=0;i<n;i++){const x=i*ratio,j=Math.floor(x),f=x-j;out[i]=(all[j]||0)*(1-f)+(all[Math.min(all.length-1,j+1)]||0)*f}return out}finally{input.dispose()}}
-async function getWhisper(cb){if(transcriber)return transcriber;if(loadingTranscriber)return await loadingTranscriber;loadingTranscriber=(async()=>{cb("Loading free Whisper AI model…");const {env,pipeline}=await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/+esm");env.allowLocalModels=false;let opts={dtype:"q8"};if("gpu" in navigator)opts.device="webgpu";try{return await pipeline("automatic-speech-recognition","Xenova/whisper-tiny",opts)}catch(e){console.warn(e);return await pipeline("automatic-speech-recognition","Xenova/whisper-tiny",{dtype:"q8"})}})();try{transcriber=await loadingTranscriber;return transcriber}finally{loadingTranscriber=null}}
-async function captionsFor(i,cb){const c=clips[i];if(c.words)return c.words;if(!$("captions").checked){c.words=[];return[]}const audio=await audio16k(c.start,c.end,cb),pipe=await getWhisper(cb);cb("Transcribing with Whisper AI…");const r=await pipe(audio,{chunk_length_s:29,stride_length_s:5,return_timestamps:"word",task:"transcribe"});c.transcript=(r.text||"").trim();c.words=(r.chunks||[]).map(x=>({text:x.text,start:c.start+(+x.timestamp?.[0]||0),end:c.start+(+x.timestamp?.[1]||+x.timestamp?.[0]||0)})).filter(x=>x.text.trim());return c.words}
+async function getWhisper(cb){
+ if(transcriber)return transcriber;
+ if(loadingTranscriber)return await loadingTranscriber;
+ loadingTranscriber=(async()=>{
+  cb("Starting free Whisper AI model…");
+  const {env,pipeline}=await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/+esm");
+  env.allowLocalModels=false;
+  try{env.useBrowserCache=true}catch{}
+  let last=-1;
+  const progress_callback=p=>{
+   try{
+    let pct=null;
+    if(Number.isFinite(p?.progress))pct=Math.round(p.progress);
+    else if(Number.isFinite(p?.loaded)&&Number.isFinite(p?.total)&&p.total>0)pct=Math.round(p.loaded/p.total*100);
+    if(pct!==null){pct=Math.max(0,Math.min(100,pct));if(pct!==last){last=pct;cb(`Downloading Whisper AI model… ${pct}%`)}}
+    else if(p?.status==="ready")cb("Whisper AI model ready.");
+    else if(p?.status==="initiate")cb(`Starting ${p.file||"AI model file"}…`);
+   }catch{}
+  };
+  const model="onnx-community/whisper-tiny";
+  const cpuOpts={dtype:"q4",progress_callback};
+  if("gpu" in navigator){
+   try{return await pipeline("automatic-speech-recognition",model,{dtype:"q4",device:"webgpu",progress_callback})}
+   catch(e){console.warn("WebGPU Whisper failed; using browser CPU",e)}
+  }
+  return await pipeline("automatic-speech-recognition",model,cpuOpts);
+ })();
+ try{transcriber=await loadingTranscriber;cb("Whisper AI model ready.");return transcriber}
+ finally{loadingTranscriber=null}
+}
+async function captionsFor(i,cb){
+ const c=clips[i];
+ if(c.words)return c.words;
+ if(!$("captions").checked){c.words=[];return[]}
+
+ const audio=await audio16k(c.start,c.end,cb),pipe=await getWhisper(cb);
+ cb("Transcribing with Whisper AI…");
+
+ const code=$("captionLanguage")?.value||"en";
+ const languageNames={
+  en:"english",es:"spanish",de:"german",fr:"french",pt:"portuguese",
+  it:"italian",ur:"urdu",hi:"hindi"
+ };
+ const opts={
+  chunk_length_s:24,
+  stride_length_s:4,
+  return_timestamps:"word",
+  task:"transcribe"
+ };
+ if(code!=="auto"&&languageNames[code])opts.language=languageNames[code];
+
+ const r=await pipe(audio,opts);
+ c.transcript=(r.text||"").replace(/\uFFFD/g,"").replace(/\s+/g," ").trim();
+
+ function cleanWord(value){
+  let s=String(value||"").replace(/\uFFFD/g,"").trim();
+  if(code==="en"){
+   // English mode: reject characters from incorrect language detection.
+   s=s.replace(/[^A-Za-z0-9'’.,!?&%$€£:+\-]/g,"");
+  }
+  return s;
+ }
+
+ c.words=(r.chunks||[]).map(x=>{
+  const text=cleanWord(x.text);
+  const a=Number(x.timestamp?.[0]);
+  const b=Number(x.timestamp?.[1]);
+  return{
+   text,
+   start:c.start+(Number.isFinite(a)?a:0),
+   end:c.start+(Number.isFinite(b)?b:(Number.isFinite(a)?a+.35:.35))
+  };
+ }).filter(x=>x.text&&x.end>=x.start&&x.end-x.start<8);
+
+ if(!c.words.length&&c.transcript){
+  // Safe fallback: show a short readable transcript rather than corrupted symbols.
+  const plain=c.transcript.split(/\s+/).filter(Boolean);
+  const step=Math.max(.18,(c.end-c.start)/Math.max(1,plain.length));
+  c.words=plain.map((text,n)=>({
+   text:cleanWord(text),
+   start:c.start+n*step,
+   end:Math.min(c.end,c.start+(n+1)*step)
+  })).filter(x=>x.text);
+ }
+ return c.words
+}
 $("prepareCaptions").onclick=async()=>{if(editIndex<0)return;const b=$("prepareCaptions");b.disabled=true;try{await captionsFor(editIndex,m=>$("transcript").textContent=m);$("transcript").textContent=clips[editIndex].transcript||"No speech detected";renderCards()}catch(e){$("transcript").textContent="Captions failed: "+(e.message||e)}finally{b.disabled=false}};
-function overlay(){const v=$("editVideo"),c=clips[editIndex];if(!c?.words?.length)return $("captionOverlay").innerHTML="";const t=v.currentTime;let k=c.words.findIndex(w=>t>=w.start&&t<=w.end);if(k<0)k=c.words.findIndex(w=>w.start>t);if(k<0)k=c.words.length-1;const a=Math.max(0,k-2),b=Math.min(c.words.length,k+3);$("captionOverlay").innerHTML=c.words.slice(a,b).map((w,j)=>`<span class="${a+j===k?'active':''}">${esc(w.text.trim())}</span>`).join(" ")};$("editVideo").addEventListener("timeupdate",overlay);
+function overlay(){
+ const v=$("editVideo"),c=clips[editIndex];
+ if(!c?.words?.length)return $("captionOverlay").innerHTML="";
+ const t=v.currentTime;
+ let k=c.words.findIndex(w=>t>=w.start&&t<=w.end);
+ if(k<0)k=c.words.findIndex(w=>w.start>t);
+ if(k<0)k=c.words.length-1;
+
+ // Show only a compact 4-word phrase so captions never run across the whole screen.
+ const groupStart=Math.floor(k/4)*4;
+ const list=c.words.slice(groupStart,groupStart+4);
+ $("captionOverlay").innerHTML=list.map((w,j)=>
+  `<span class="${groupStart+j===k?'active':''}">${esc(w.text.trim())}</span>`
+ ).join(" ")
+}
+$("editVideo").addEventListener("timeupdate",overlay);
 function size(){const a=$("aspect").value;return a==="landscape"?[1280,720]:a==="square"?[1080,1080]:[720,1280]};function drawCover(v,cx,cy){const W=canvas.width,H=canvas.height,sw=v.videoWidth,sh=v.videoHeight,tar=W/H,src=sw/sh;let sx=0,sy=0,cw=sw,ch=sh;if(src>tar){cw=sh*tar;sx=Math.max(0,Math.min(sw-cw,cx-cw/2))}else{ch=sw/tar;sy=Math.max(0,Math.min(sh-ch,cy-ch/2))}ctx.drawImage(v,sx,sy,cw,ch,0,0,W,H)}function drawFit(v){const W=canvas.width,H=canvas.height,sw=v.videoWidth,sh=v.videoHeight;ctx.save();ctx.filter="blur(28px) brightness(.62)";let s=Math.max(W/sw,H/sh);ctx.drawImage(v,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s);ctx.restore();s=Math.min(W/sw,H/sh);ctx.drawImage(v,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s)}
-function drawText(c,t){if(!$("captions").checked||!c.words?.length)return;let k=c.words.findIndex(w=>t>=w.start&&t<=w.end);if(k<0)k=c.words.findIndex(w=>w.start>t);if(k<0)k=c.words.length-1;const a=Math.max(0,k-3),b=Math.min(c.words.length,k+4),list=c.words.slice(a,b),W=canvas.width,H=canvas.height,scale=W/720,font=Math.round(+$("captionSize").value*scale),pos=$("captionPos").value;ctx.save();ctx.textAlign="center";ctx.textBaseline="middle";ctx.font=`900 ${font}px Arial`;ctx.lineJoin="round";ctx.lineWidth=($("captionStyle").value==="bold"?10:$("captionStyle").value==="clean"?5:8)*scale;const y=pos==="top"?H*.18:pos==="middle"?H*.52:H*.82,gap=10*scale,widths=list.map(w=>ctx.measureText(w.text.trim()).width),total=widths.reduce((x,y)=>x+y,0)+gap*(list.length-1);let x=(W-total)/2;if(total>W*.9){ctx.font=`900 ${Math.round(font*.78)}px Arial`}for(let j=0;j<list.length;j++){const txt=list[j].text.trim(),ww=ctx.measureText(txt).width;ctx.strokeStyle="rgba(0,0,0,.92)";ctx.strokeText(txt,x+ww/2,y);ctx.fillStyle=a+j===k?$("activeColor").value:$("textColor").value;ctx.fillText(txt,x+ww/2,y);x+=ww+gap}ctx.restore()}
+function drawText(c,t){
+ if(!$("captions").checked||!c.words?.length)return;
+ let k=c.words.findIndex(w=>t>=w.start&&t<=w.end);
+ if(k<0)k=c.words.findIndex(w=>w.start>t);
+ if(k<0)k=c.words.length-1;
+
+ const groupStart=Math.floor(k/4)*4;
+ const list=c.words.slice(groupStart,groupStart+4);
+ const W=canvas.width,H=canvas.height,scale=W/720;
+ let font=Math.round(+$("captionSize").value*scale);
+ const pos=$("captionPos").value;
+ const style=$("captionStyle").value;
+ const maxWidth=W*.78;
+ const gap=10*scale;
+
+ ctx.save();
+ ctx.textAlign="center";
+ ctx.textBaseline="middle";
+ ctx.font=`900 ${font}px Arial, sans-serif`;
+ ctx.lineJoin="round";
+ ctx.lineWidth=(style==="bold"?10:style==="clean"?5:8)*scale;
+
+ // Reduce font only if even the short phrase is too wide.
+ let phraseWidth=list.reduce((sum,w)=>sum+ctx.measureText(w.text.trim()).width,0)+gap*Math.max(0,list.length-1);
+ if(phraseWidth>maxWidth){
+  font=Math.max(Math.round(34*scale),Math.round(font*maxWidth/phraseWidth));
+  ctx.font=`900 ${font}px Arial, sans-serif`;
+ }
+
+ // Wrap into up to 2 centered lines.
+ const lines=[[]];
+ for(const w of list){
+  const line=lines[lines.length-1];
+  const trial=[...line,w];
+  const width=trial.reduce((sum,x)=>sum+ctx.measureText(x.text.trim()).width,0)+gap*Math.max(0,trial.length-1);
+  if(width>maxWidth&&line.length&&lines.length<2)lines.push([w]);
+  else line.push(w);
+ }
+
+ const lineH=font*1.15;
+ const centerY=pos==="top"?H*.18:pos==="middle"?H*.52:H*.82;
+ let y=centerY-(lines.length-1)*lineH/2;
+
+ for(const line of lines){
+  const widths=line.map(w=>ctx.measureText(w.text.trim()).width);
+  const total=widths.reduce((a,b)=>a+b,0)+gap*Math.max(0,line.length-1);
+  let x=(W-total)/2;
+  for(let j=0;j<line.length;j++){
+   const w=line[j],txt=w.text.trim(),ww=widths[j];
+   const globalIndex=c.words.indexOf(w);
+   ctx.strokeStyle="rgba(0,0,0,.94)";
+   ctx.strokeText(txt,x+ww/2,y);
+   ctx.fillStyle=globalIndex===k?$("activeColor").value:$("textColor").value;
+   ctx.fillText(txt,x+ww/2,y);
+   x+=ww+gap;
+  }
+  y+=lineH;
+ }
+ ctx.restore()
+}
 function mime(){return ["video/mp4;codecs=avc1.42E01E,mp4a.40.2","video/mp4","video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm"].find(t=>window.MediaRecorder&&MediaRecorder.isTypeSupported(t))||""}
-async function exportClip(i,cb){const c=clips[i];if($("captions").checked&&!c.words)await captionsFor(i,cb);await seek(c.start);source.muted=false;const [W,H]=size();canvas.width=W;canvas.height=H;const det=$("layout").value==="auto"?await initDetector():null;lastFace={x:source.videoWidth/2,y:source.videoHeight/2};if(!canvas.captureStream||!window.MediaRecorder)throw new Error("Local export is not supported by this browser");const cs=canvas.captureStream(30);let ats=[];try{const vs=source.captureStream?source.captureStream():(source.mozCaptureStream?source.mozCaptureStream():null);if(vs)ats=vs.getAudioTracks()}catch{}const stream=new MediaStream([...cs.getVideoTracks(),...ats]),mt=mime(),rec=new MediaRecorder(stream,mt?{mimeType:mt,videoBitsPerSecond:5500000}:undefined),parts=[];rec.ondataavailable=e=>{if(e.data?.size)parts.push(e.data)};const stopped=new Promise((r,j)=>{rec.onstop=r;rec.onerror=e=>j(e.error||new Error("Recorder failed"))});rec.start(500);await source.play();let n=0;await new Promise(done=>{const tick=()=>{const t=source.currentTime;if(det&&n%8===0){try{const r=det.detectForVideo(source,Math.round(t*1000));if(r?.detections?.length){const d=r.detections.reduce((a,b)=>b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a),tx=d.boundingBox.originX+d.boundingBox.width/2,ty=d.boundingBox.originY+d.boundingBox.height/2;lastFace.x=lastFace.x*.82+tx*.18;lastFace.y=lastFace.y*.88+ty*.12}}catch{}}ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);if($("layout").value==="fit")drawFit(source);else drawCover(source,lastFace.x,lastFace.y);drawText(c,t);n++;cb(`Rendering… ${Math.round(Math.max(0,Math.min(1,(t-c.start)/(c.end-c.start)))*100)}%`);if(t>=c.end||source.ended)return done();requestAnimationFrame(tick)};tick()});source.pause();rec.stop();await stopped;const blob=new Blob(parts,{type:rec.mimeType||"video/webm"}),ext=(blob.type||"").includes("mp4")?"mp4":"webm";return{blob,ext}}
+
+async function buildFacePath(c,det,cb){
+ if(!det)return null;
+ const span=Math.max(.2,c.end-c.start);
+ const sampleCount=Math.min(90,Math.max(12,Math.ceil(span/1.0)));
+ const step=span/Math.max(1,sampleCount-1);
+ const points=[];
+ let smooth=null;
+
+ for(let n=0;n<sampleCount;n++){
+  const t=Math.min(c.end-.03,c.start+n*step);
+  await seek(t);
+  let target=null;
+  try{
+   const r=det.detectForVideo(source,Math.round(t*1000));
+   if(r?.detections?.length){
+    // Largest face is usually the active foreground speaker in interview/podcast footage.
+    const d=r.detections.reduce((a,b)=>
+     b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a
+    );
+    target={
+     x:d.boundingBox.originX+d.boundingBox.width/2,
+     y:d.boundingBox.originY+d.boundingBox.height/2
+    };
+   }
+  }catch{}
+
+  if(target){
+   if(!smooth)smooth={...target};
+   else{
+    const jump=Math.abs(target.x-smooth.x)/Math.max(1,source.videoWidth);
+    // Fast response on speaker/shot changes, gentle response during normal movement.
+    const alpha=jump>.18?.62:.28;
+    smooth.x=smooth.x*(1-alpha)+target.x*alpha;
+    smooth.y=smooth.y*(1-alpha*.65)+target.y*(alpha*.65);
+   }
+  }else if(!smooth){
+   smooth={x:source.videoWidth/2,y:source.videoHeight/2};
+  }
+  points.push({t,x:smooth.x,y:smooth.y});
+
+  if(n%5===0)cb(`Preparing face reframe… ${Math.round((n+1)/sampleCount*100)}%`);
+  if(n%6===0)await sleep(0);
+ }
+ return points
+}
+
+function faceAt(path,t){
+ if(!path?.length)return{x:source.videoWidth/2,y:source.videoHeight/2};
+ if(t<=path[0].t)return{x:path[0].x,y:path[0].y};
+ if(t>=path[path.length-1].t)return{x:path[path.length-1].x,y:path[path.length-1].y};
+ let lo=0,hi=path.length-1;
+ while(hi-lo>1){
+  const m=(lo+hi)>>1;
+  if(path[m].t<=t)lo=m;else hi=m;
+ }
+ const a=path[lo],b=path[hi],u=(t-a.t)/Math.max(.001,b.t-a.t);
+ return{x:a.x+(b.x-a.x)*u,y:a.y+(b.y-a.y)*u}
+}
+
+async function exportClip(i,cb){
+ const c=clips[i];
+ if($("captions").checked&&!c.words)await captionsFor(i,cb);
+
+ const [W,H]=size();
+ canvas.width=W;canvas.height=H;
+
+ const det=$("layout").value==="auto"?await initDetector():null;
+ const facePath=det?await buildFacePath(c,det,cb):null;
+
+ await seek(c.start);
+ source.muted=false;
+
+ if(!canvas.captureStream||!window.MediaRecorder)
+  throw new Error("Local export is not supported by this browser");
+
+ const cs=canvas.captureStream(30);
+ let ats=[];
+ try{
+  const vs=source.captureStream?source.captureStream():(source.mozCaptureStream?source.mozCaptureStream():null);
+  if(vs)ats=vs.getAudioTracks()
+ }catch{}
+
+ const stream=new MediaStream([...cs.getVideoTracks(),...ats]);
+ const mt=mime();
+ const rec=new MediaRecorder(stream,mt?{mimeType:mt,videoBitsPerSecond:5500000}:undefined);
+ const parts=[];
+ rec.ondataavailable=e=>{if(e.data?.size)parts.push(e.data)};
+ const stopped=new Promise((r,j)=>{rec.onstop=r;rec.onerror=e=>j(e.error||new Error("Recorder failed"))});
+
+ rec.start(500);
+ await source.play();
+
+ await new Promise(done=>{
+  const tick=()=>{
+   const t=source.currentTime;
+   const face=faceAt(facePath,t);
+
+   ctx.fillStyle="#000";
+   ctx.fillRect(0,0,W,H);
+
+   if($("layout").value==="fit")drawFit(source);
+   else drawCover(source,face.x,face.y);
+
+   drawText(c,t);
+
+   cb(`Rendering… ${Math.round(Math.max(0,Math.min(1,(t-c.start)/(c.end-c.start)))*100)}%`);
+
+   if(t>=c.end||source.ended)return done();
+   requestAnimationFrame(tick)
+  };
+  tick()
+ });
+
+ source.pause();
+ rec.stop();
+ await stopped;
+
+ const blob=new Blob(parts,{type:rec.mimeType||"video/webm"});
+ const ext=(blob.type||"").includes("mp4")?"mp4":"webm";
+ return{blob,ext}
+}
 function save(blob,name){const u=URL.createObjectURL(blob),a=document.createElement("a");a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),30000)}window.quickExport=async(i,b)=>{const s=$(`cardStatus${i}`);b.disabled=true;try{const r=await exportClip(i,m=>s.textContent=m);save(r.blob,`ClipPanda-Clip-${i+1}.${r.ext}`);s.className="small ok";s.textContent=`Done · ${(r.blob.size/1048576).toFixed(1)} MB`}catch(e){s.className="small error";s.textContent=e.message||e}finally{b.disabled=false}};$("exportOne").onclick=async()=>{const b=$("exportOne");b.disabled=true;try{const r=await exportClip(editIndex,m=>$("exportStatus").textContent=m);save(r.blob,`ClipPanda-Clip-${editIndex+1}.${r.ext}`);$("exportStatus").className="small ok";$("exportStatus").textContent="Done"}catch(e){$("exportStatus").className="small error";$("exportStatus").textContent=e.message||e}finally{b.disabled=false}};$("exportAll").onclick=async()=>{const b=$("exportAll");b.disabled=true;try{for(let i=0;i<clips.length;i++){const s=$(`cardStatus${i}`),r=await exportClip(i,m=>s.textContent=`Batch: ${m}`);save(r.blob,`ClipPanda-Clip-${i+1}.${r.ext}`);s.textContent="Exported";await sleep(500)}}finally{b.disabled=false}};
