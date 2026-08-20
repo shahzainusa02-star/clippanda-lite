@@ -47,57 +47,55 @@ async function getWhisper(cb){
 async function captionsFor(i,cb){
  const c=clips[i];
  if(c.words)return c.words;
- if(!$("captions").checked){c.words=[];return[]}
+ if(!$('captions').checked){c.words=[];return[]}
 
  const audio=await audio16k(c.start,c.end,cb),pipe=await getWhisper(cb);
- cb("Transcribing with Whisper AI…");
+ cb('Transcribing with Whisper AI…');
 
- const code=$("captionLanguage")?.value||"en";
+ const code=$('captionLanguage')?.value||'en';
  const languageNames={
-  en:"english",es:"spanish",de:"german",fr:"french",pt:"portuguese",
-  it:"italian",ur:"urdu",hi:"hindi"
+  en:'english',es:'spanish',de:'german',fr:'french',pt:'portuguese',
+  it:'italian',ur:'urdu',hi:'hindi'
  };
+
+ // Use segment timestamps. The lightweight Q4 browser model does not expose
+ // cross-attention tensors required by true Whisper word timestamps.
  const opts={
   chunk_length_s:24,
   stride_length_s:4,
-  return_timestamps:"word",
-  task:"transcribe"
+  return_timestamps:true,
+  task:'transcribe'
  };
- if(code!=="auto"&&languageNames[code])opts.language=languageNames[code];
+ if(code!=='auto'&&languageNames[code])opts.language=languageNames[code];
 
  const r=await pipe(audio,opts);
- c.transcript=(r.text||"").replace(/\uFFFD/g,"").replace(/\s+/g," ").trim();
+ c.transcript=(r.text||'').replace(/\uFFFD/g,'').replace(/\s+/g,' ').trim();
 
  function cleanWord(value){
-  let s=String(value||"").replace(/\uFFFD/g,"").trim();
-  if(code==="en"){
-   // English mode: reject characters from incorrect language detection.
-   s=s.replace(/[^A-Za-z0-9'’.,!?&%$€£:+\-]/g,"");
-  }
+  let s=String(value||'').replace(/\uFFFD/g,'').trim();
+  if(code==='en')s=s.replace(/[^A-Za-z0-9'’.,!?&%$€£:+\-]/g,'');
   return s;
  }
 
- c.words=(r.chunks||[]).map(x=>{
-  const text=cleanWord(x.text);
-  const a=Number(x.timestamp?.[0]);
-  const b=Number(x.timestamp?.[1]);
-  return{
-   text,
-   start:c.start+(Number.isFinite(a)?a:0),
-   end:c.start+(Number.isFinite(b)?b:(Number.isFinite(a)?a+.35:.35))
-  };
- }).filter(x=>x.text&&x.end>=x.start&&x.end-x.start<8);
-
- if(!c.words.length&&c.transcript){
-  // Safe fallback: show a short readable transcript rather than corrupted symbols.
-  const plain=c.transcript.split(/\s+/).filter(Boolean);
-  const step=Math.max(.18,(c.end-c.start)/Math.max(1,plain.length));
-  c.words=plain.map((text,n)=>({
-   text:cleanWord(text),
-   start:c.start+n*step,
-   end:Math.min(c.end,c.start+(n+1)*step)
-  })).filter(x=>x.text);
+ const out=[];
+ for(const seg of (r.chunks||[])){
+  const text=String(seg.text||'').replace(/\uFFFD/g,'').trim();
+  if(!text)continue;
+  const words=text.split(/\s+/).map(cleanWord).filter(Boolean);
+  if(!words.length)continue;
+  let a=Number(seg.timestamp?.[0]),b=Number(seg.timestamp?.[1]);
+  if(!Number.isFinite(a))a=0;
+  if(!Number.isFinite(b)||b<=a)b=a+Math.max(.7,words.length*.32);
+  const segStart=c.start+a,segEnd=Math.min(c.end,c.start+b),span=Math.max(.18,segEnd-segStart),step=span/words.length;
+  words.forEach((text,n)=>out.push({text,start:segStart+n*step,end:Math.min(segEnd,segStart+(n+1)*step)}));
  }
+
+ if(!out.length&&c.transcript){
+  const words=c.transcript.split(/\s+/).map(cleanWord).filter(Boolean),span=Math.max(.2,c.end-c.start),step=span/Math.max(1,words.length);
+  words.forEach((text,n)=>out.push({text,start:c.start+n*step,end:Math.min(c.end,c.start+(n+1)*step)}));
+ }
+
+ c.words=out.filter(x=>x.text&&x.end>x.start);
  return c.words
 }
 $("prepareCaptions").onclick=async()=>{if(editIndex<0)return;const b=$("prepareCaptions");b.disabled=true;try{await captionsFor(editIndex,m=>$("transcript").textContent=m);$("transcript").textContent=clips[editIndex].transcript||"No speech detected";renderCards()}catch(e){$("transcript").textContent="Captions failed: "+(e.message||e)}finally{b.disabled=false}};
