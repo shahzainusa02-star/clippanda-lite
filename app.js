@@ -1,4 +1,4 @@
-import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,Output,Mp4OutputFormat,BufferTarget,CanvasSource,MediaStreamAudioTrackSource,Quality} from "https://cdn.jsdelivr.net/npm/mediabunny@1.42.0/+esm";
+import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,Output,Mp4OutputFormat,BufferTarget,CanvasSource,MediaStreamAudioTrackSource} from "https://cdn.jsdelivr.net/npm/mediabunny@1.42.0/+esm";
 const $=id=>document.getElementById(id),source=$("source"),sample=$("sample"),sctx=sample.getContext("2d",{willReadFrequently:true}),canvas=$("renderCanvas"),ctx=canvas.getContext("2d");
 let file=null,url=null,duration=0,features=[],clips=[],editIndex=-1,detector=null,detectorTried=false,transcriber=null,loadingTranscriber=null,lastFace={x:0,y:0};
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -267,7 +267,7 @@ async function exportClip(i,cb){
  const output=new Output({format:new Mp4OutputFormat(),target});
  const videoOut=new CanvasSource(canvas,{
   codec:"avc",
-  quality:new Quality({bitrate:5500000}),
+  bitrate:5500000,
   hardwareAcceleration:"prefer-hardware",
   keyFrameInterval:2
  });
@@ -280,7 +280,7 @@ async function exportClip(i,cb){
   if(audioTrack){
    audioOut=new MediaStreamAudioTrackSource(audioTrack,{
     codec:"aac",
-    quality:new Quality({bitrate:192000})
+    bitrate:192000
    });
    audioOut.errorPromise.catch(e=>console.warn("Audio encoder error",e));
    output.addAudioTrack(audioOut)
