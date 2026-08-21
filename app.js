@@ -1,14 +1,23 @@
 import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,Output,Mp4OutputFormat,BufferTarget,CanvasSource,AudioBufferSource} from "https://cdn.jsdelivr.net/npm/mediabunny@1.42.0/+esm";
 const $=id=>document.getElementById(id),source=$("source"),sample=$("sample"),sctx=sample.getContext("2d",{willReadFrequently:true}),canvas=$("renderCanvas"),ctx=canvas.getContext("2d");
+const speakerSample=document.createElement("canvas"),speakerCtx=speakerSample.getContext("2d",{willReadFrequently:true});
+speakerSample.width=320;speakerSample.height=180;
 let file=null,url=null,duration=0,features=[],clips=[],editIndex=-1,detector=null,detectorTried=false,transcriber=null,loadingTranscriber=null,lastFace={x:0,y:0};
+const faceToggle=$("faceTracking")?.closest(".toggle");
+if(faceToggle){
+ const title=faceToggle.querySelector("b"),note=faceToggle.querySelector(".small");
+ if(title)title.textContent="Multi-face active speaker tracking";
+ if(note)note.textContent="Recognizes multiple faces and follows the person who is speaking."
+}
+if($("layout")?.options?.[0])$("layout").options[0].textContent="Auto Reframe · active speaker";
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function wait(el,name,timeout=7000){return new Promise((res,rej)=>{let done=false;const end=(err)=>{if(done)return;done=true;clearTimeout(t);el.removeEventListener(name,ok);el.removeEventListener("error",bad);err?rej(err):res()},ok=()=>end(),bad=()=>end(new Error("Video could not be read")),t=setTimeout(()=>end(new Error("Timed out")),timeout);el.addEventListener(name,ok,{once:true});el.addEventListener("error",bad,{once:true})})}
 async function meta(el=source){if(el.readyState>=1&&Number.isFinite(el.duration))return;await wait(el,"loadedmetadata")};async function seek(t,el=source){return new Promise(r=>{let x=false;const done=()=>{if(x)return;x=true;el.removeEventListener("seeked",done);r()};el.addEventListener("seeked",done,{once:true});el.currentTime=Math.max(0,Math.min(t,(el.duration||duration)-.03));setTimeout(done,1200)})};function fmt(t){t=Math.max(0,+t||0);return `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,"0")}`}
 $("file").onchange=async()=>{file=$("file").files?.[0]||null;clips=[];$("resultsCard").classList.add("hidden");if(url)URL.revokeObjectURL(url);if(!file)return;url=URL.createObjectURL(file);source.src=url;$("fileInfo").textContent=`${file.name} · reading…`;try{await meta();duration=source.duration;$("fileInfo").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB · ${fmt(duration)}`;$("startSec").value="0.00";$("endSec").value=(duration/60).toFixed(2);$("startSec").max=(duration/60).toFixed(2);$("endSec").max=(duration/60).toFixed(2);$("rangeBox").classList.remove("hidden");$("settings").classList.remove("hidden");syncRange()}catch(e){$("fileInfo").textContent=e.message}};
 function syncRange(){let s=Math.max(0,(+$("startSec").value||0)*60),e=Math.min(duration,(+$("endSec").value||duration/60)*60);if(e<s+.5)e=Math.min(duration,s+.5);if(s>e-.5)s=Math.max(0,e-.5);$("startSec").value=(s/60).toFixed(2);$("endSec").value=(e/60).toFixed(2);$("startRange").value=duration?s/duration*100:0;$("endRange").value=duration?e/duration*100:100;$("rangeText").textContent=`Analyze ${fmt(s)} – ${fmt(e)} (${fmt(e-s)})`};$("startRange").oninput=()=>{$("startSec").value=(duration*+$("startRange").value/100/60).toFixed(2);syncRange()};$("endRange").oninput=()=>{$("endSec").value=(duration*+$("endRange").value/100/60).toFixed(2);syncRange()};$("startSec").onchange=syncRange;$("endSec").onchange=syncRange;
-async function initDetector(){if(!$("faceTracking").checked)return null;if(detector)return detector;if(detectorTried)return null;detectorTried=true;try{const {FilesetResolver,FaceDetector}=await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/+esm");const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");detector=await FaceDetector.createFromOptions(vision,{baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",delegate:"CPU"},runningMode:"VIDEO",minDetectionConfidence:.5,minSuppressionThreshold:.3});return detector}catch(e){console.warn(e);return null}}
+async function initDetector(){if(!$("faceTracking").checked)return null;if(detector)return detector;if(detectorTried)return null;detectorTried=true;try{const {FilesetResolver,FaceDetector}=await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/+esm");const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");detector=await FaceDetector.createFromOptions(vision,{baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",delegate:"CPU"},runningMode:"IMAGE",minDetectionConfidence:.38,minSuppressionThreshold:.25});return detector}catch(e){console.warn(e);return null}}
 function stats(prev){sctx.drawImage(source,0,0,200,112);const d=sctx.getImageData(0,0,200,112).data,g=new Uint8Array(22400);let motion=0,edge=0,lum=0;for(let i=0,p=0;i<d.length;i+=4,p++){const v=(d[i]*77+d[i+1]*150+d[i+2]*29)>>8;g[p]=v;lum+=v}if(prev)for(let i=0;i<g.length;i+=3)motion+=Math.abs(g[i]-prev[i]);for(let y=1;y<111;y+=2)for(let x=1;x<199;x+=2){const p=y*200+x;edge+=Math.abs(g[p]-g[p-1])+Math.abs(g[p]-g[p-200])}return {g,motion:prev?motion/(Math.ceil(g.length/3)*255):0,edge:edge/(100*56*2*255),lum:lum/g.length/255}}
-async function analyze(){const s=(+$("startSec").value)*60,e=(+$("endSec").value)*60,span=e-s,n=Math.min(260,Math.max(24,Math.ceil(span))),det=await initDetector();features=[];let prev=null;for(let i=0;i<n;i++){const t=s+(span-.05)*(i/(n-1));await seek(t);const f=stats(prev);prev=f.g;let face=0;if(det&&i%2===0){try{const r=det.detectForVideo(source,Math.round(t*1000));if(r?.detections?.length){const b=r.detections.reduce((a,b)=>b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a);face=Math.min(1,(b.boundingBox.width*b.boundingBox.height)/(source.videoWidth*source.videoHeight)*8+.3)}}catch{}}const scene=Math.min(1,f.motion*2.4),score=f.motion*.4+scene*.25+f.edge*.2+face*.12+Math.min(1,Math.abs(f.lum-.5)+.2)*.03;features.push({t,score,face});if(i%3===0){$("bar").style.width=`${Math.round(5+78*(i+1)/n)}%`;$("status").textContent=`Analyzing ${i+1}/${n} frames…`}if(i%6===0)await sleep(0)}}
+async function analyze(){const s=(+$("startSec").value)*60,e=(+$("endSec").value)*60,span=e-s,n=Math.min(260,Math.max(24,Math.ceil(span))),det=await initDetector();features=[];let prev=null;for(let i=0;i<n;i++){const t=s+(span-.05)*(i/(n-1));await seek(t);const f=stats(prev);prev=f.g;let face=0;if(det&&i%2===0){try{const r=det.detect(source);if(r?.detections?.length){const b=r.detections.reduce((a,b)=>b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a);face=Math.min(1,(b.boundingBox.width*b.boundingBox.height)/(source.videoWidth*source.videoHeight)*8+.3)}}catch{}}const scene=Math.min(1,f.motion*2.4),score=f.motion*.4+scene*.25+f.edge*.2+face*.12+Math.min(1,Math.abs(f.lum-.5)+.2)*.03;features.push({t,score,face});if(i%3===0){$("bar").style.width=`${Math.round(5+78*(i+1)/n)}%`;$("status").textContent=`Analyzing ${i+1}/${n} frames…`}if(i%6===0)await sleep(0)}}
 function choose(){const rs=(+$("startSec").value)*60,re=(+$("endSec").value)*60,len=+$("clipLength").value,count=+$("clipCount").value;if(re-rs<=len)return[{start:rs,end:re,score:90,words:null,transcript:""}];const wins=[],step=Math.max(2,len/6);for(let st=rs;st<=re-len+.001;st+=step){const en=st+len,a=features.filter(x=>x.t>=st&&x.t<en);if(!a.length)continue;const vals=a.map(x=>x.score),avg=vals.reduce((x,y)=>x+y,0)/vals.length,peak=Math.max(...vals),early=a.filter(x=>x.t<st+len/3),hook=early.length?Math.max(...early.map(x=>x.score)):0,faces=a.reduce((x,y)=>x+y.face,0)/a.length;wins.push({start:st,end:en,raw:avg*.48+peak*.31+hook*.15+faces*.06,words:null,transcript:""})}wins.sort((a,b)=>b.raw-a.raw);const out=[];for(const w of wins){if(out.some(c=>Math.max(0,Math.min(c.end,w.end)-Math.max(c.start,w.start))>len*.32))continue;out.push(w);if(out.length>=count)break}for(const w of wins){if(out.length>=count)break;if(!out.includes(w))out.push(w)}const lo=Math.min(...out.map(x=>x.raw)),hi=Math.max(...out.map(x=>x.raw)),sp=Math.max(.0001,hi-lo);out.forEach(x=>x.score=Math.round(70+29*(x.raw-lo)/sp));return out.sort((a,b)=>a.start-b.start)}
 $("generate").onclick=async()=>{if(!file)return;$("generate").disabled=true;$("status").className="small";$("status").textContent="Starting…";$("bar").style.width="2%";try{await analyze();clips=choose();renderCards();$("bar").style.width="100%";$("status").textContent=`Generated ${clips.length} clips.`;$("resultsCard").classList.remove("hidden");$("resultsCard").scrollIntoView({behavior:"smooth"})}catch(e){$("status").className="small error";$("status").textContent=e.message||e}finally{$("generate").disabled=false}};
 function renderCards(){$("results").innerHTML=clips.map((c,i)=>`<article class="clip"><div class="row"><div><b>Clip ${i+1}</b><div class="small">${fmt(c.start)} – ${fmt(c.end)} · ${(c.end-c.start).toFixed(1)}s</div></div><div class="score">${c.score}/100</div></div><video controls playsinline preload="metadata" src="${url}#t=${c.start},${c.end}"></video><div style="margin-top:7px"><span class="badge">${esc($("aspect").selectedOptions[0].text)}</span><span class="badge">${esc($("layout").selectedOptions[0].text)}</span>${c.words?'<span class="badge">Captions ✓</span>':''}</div><div class="row" style="margin-top:10px"><button class="secondary" onclick="window.openEdit(${i})">Edit clip</button><button class="green" onclick="window.quickExport(${i},this)">Create & Download</button></div><div id="cardStatus${i}" class="small"></div></article>`).join("")}
@@ -178,48 +187,130 @@ function drawText(c,t){
 }
 function mime(){return ["video/mp4;codecs=avc1.42E01E,mp4a.40.2","video/mp4","video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm"].find(t=>window.MediaRecorder&&MediaRecorder.isTypeSupported(t))||""}
 
+function normalizedFaceBox(d){
+ const b=d?.boundingBox;
+ if(!b)return null;
+ const x=Math.max(0,b.originX),y=Math.max(0,b.originY);
+ const w=Math.max(1,Math.min(source.videoWidth-x,b.width));
+ const h=Math.max(1,Math.min(source.videoHeight-y,b.height));
+ const mouth=d.keypoints?.[3];
+ return{x,y,w,h,cx:x+w/2,cy:y+h/2,mouthX:mouth?mouth.x*source.videoWidth:x+w/2,mouthY:mouth?mouth.y*source.videoHeight:y+h*.74,confidence:d.categories?.[0]?.score??.5}
+}
+
+function boxIou(a,b){
+ const x1=Math.max(a.x,b.x),y1=Math.max(a.y,b.y);
+ const x2=Math.min(a.x+a.w,b.x+b.w),y2=Math.min(a.y+a.h,b.y+b.h);
+ const intersection=Math.max(0,x2-x1)*Math.max(0,y2-y1);
+ return intersection/Math.max(1,a.w*a.h+b.w*b.h-intersection)
+}
+
+function mouthSignature(frame,box){
+ // Lower-middle face region contains the lips and jaw. An 8×4 luminance
+ // signature is enough to measure speaking motion without a heavy landmark model.
+ const cols=8,rows=4,out=new Float32Array(cols*rows);
+ const sx=speakerSample.width/Math.max(1,source.videoWidth),sy=speakerSample.height/Math.max(1,source.videoHeight);
+ const left=(box.mouthX-box.w*.34)*sx,top=(box.mouthY-box.h*.16)*sy;
+ const width=box.w*.68*sx,height=box.h*.34*sy;
+ for(let row=0;row<rows;row++)for(let col=0;col<cols;col++){
+  const x0=Math.max(0,Math.floor(left+width*col/cols));
+  const x1=Math.min(speakerSample.width,Math.ceil(left+width*(col+1)/cols));
+  const y0=Math.max(0,Math.floor(top+height*row/rows));
+  const y1=Math.min(speakerSample.height,Math.ceil(top+height*(row+1)/rows));
+  let sum=0,count=0;
+  for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){
+   const p=(y*speakerSample.width+x)*4;
+   sum+=(frame.data[p]*77+frame.data[p+1]*150+frame.data[p+2]*29)>>8;
+   count++
+  }
+  out[row*cols+col]=count?sum/count:0
+ }
+ return out
+}
+
+function signatureChange(a,b){
+ if(!a||!b||a.length!==b.length)return 0;
+ let total=0;
+ for(let i=0;i<a.length;i++)total+=Math.abs(a[i]-b[i]);
+ return Math.min(1,total/(a.length*24))
+}
+
 async function buildFacePath(c,det,cb){
  if(!det)return null;
  const span=Math.max(.2,c.end-c.start);
- const sampleCount=Math.min(90,Math.max(12,Math.ceil(span/1.0)));
+ const sampleCount=Math.min(300,Math.max(18,Math.ceil(span/.35)));
  const step=span/Math.max(1,sampleCount-1);
- const points=[];
- let smooth=null;
+ const points=[],tracks=new Map();
+ let previousVisible=[],nextTrackId=1,activeId=null,challengerId=null,challengerFrames=0,smooth=null;
 
  for(let n=0;n<sampleCount;n++){
   const t=Math.min(c.end-.03,c.start+n*step);
   await seek(t);
-  let target=null;
-  try{
-   const r=det.detectForVideo(source,Math.round(t*1000));
-   if(r?.detections?.length){
-    // Largest face is usually the active foreground speaker in interview/podcast footage.
-    const d=r.detections.reduce((a,b)=>
-     b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a
-    );
-    target={
-     x:d.boundingBox.originX+d.boundingBox.width/2,
-     y:d.boundingBox.originY+d.boundingBox.height/2
-    };
-   }
-  }catch{}
+  let detections=[];
+  try{detections=det.detect(source)?.detections||[]}catch{}
 
-  if(target){
+  speakerCtx.drawImage(source,0,0,speakerSample.width,speakerSample.height);
+  const frame=speakerCtx.getImageData(0,0,speakerSample.width,speakerSample.height);
+  const faces=detections.map(normalizedFaceBox).filter(Boolean).sort((a,b)=>b.w*b.h-a.w*a.h);
+  const usedTracks=new Set(),visible=[];
+
+  for(const box of faces){
+   let match=null,bestCost=Infinity;
+   for(const tr of previousVisible){
+    if(usedTracks.has(tr.id))continue;
+    const distance=Math.hypot((box.cx-tr.box.cx)/Math.max(1,source.videoWidth),(box.cy-tr.box.cy)/Math.max(1,source.videoHeight));
+    const overlap=boxIou(box,tr.box);
+    const sizeCost=Math.abs(Math.log((box.w*box.h)/Math.max(1,tr.box.w*tr.box.h)));
+    const cost=distance*2.8+(1-overlap)*.28+sizeCost*.12;
+    if((overlap>.03||distance<.17)&&cost<bestCost){match=tr;bestCost=cost}
+   }
+
+   const id=match?.id??nextTrackId++;
+   const old=tracks.get(id)||{id,activity:0,box:null,signature:null};
+   const signature=mouthSignature(frame,box);
+   const mouth=signatureChange(signature,old.signature);
+   const movement=old.box?Math.min(1,Math.hypot(box.cx-old.box.cx,box.cy-old.box.cy)/Math.max(20,old.box.w)*.8):0;
+   const mouthScore=Math.min(1,mouth*4.8);
+   const instantActivity=mouthScore*.82+movement*.18;
+   const activity=old.activity*.48+instantActivity*.52;
+   const area=Math.min(1,Math.sqrt((box.w*box.h)/Math.max(1,source.videoWidth*source.videoHeight)/.11));
+   const center=Math.max(0,1-Math.abs(box.cx/source.videoWidth-.5)*1.35);
+   const score=mouthScore*.54+activity*.25+movement*.08+area*.07+center*.025+box.confidence*.035;
+   const tr={id,box,signature,activity,mouth:mouthScore,movement,score,lastSeen:n};
+   tracks.set(id,tr);usedTracks.add(id);visible.push(tr)
+  }
+
+  let switched=false;
+  const best=visible.reduce((a,b)=>!a||b.score>a.score?b:a,null);
+  const current=visible.find(x=>x.id===activeId)||null;
+  if(!current){
+   if(best){activeId=best.id;switched=true}
+   challengerId=null;challengerFrames=0
+  }else if(best&&best.id!==activeId){
+   const clearlySpeaking=best.mouth>current.mouth+.08||best.activity>current.activity+.10;
+   const clearlyStronger=best.score>current.score+.10;
+   if(clearlySpeaking&&clearlyStronger){
+    if(challengerId===best.id)challengerFrames++;
+    else{challengerId=best.id;challengerFrames=1}
+    if(challengerFrames>=2){activeId=best.id;switched=true;challengerId=null;challengerFrames=0}
+   }else{challengerId=null;challengerFrames=0}
+  }else{challengerId=null;challengerFrames=0}
+
+  const chosen=visible.find(x=>x.id===activeId)||best;
+  if(chosen){
+   const target={x:chosen.box.cx,y:chosen.box.cy};
    if(!smooth)smooth={...target};
    else{
     const jump=Math.abs(target.x-smooth.x)/Math.max(1,source.videoWidth);
-    // Fast response on speaker/shot changes, gentle response during normal movement.
-    const alpha=jump>.18?.62:.28;
+    const alpha=switched?.72:jump>.18?.52:.30;
     smooth.x=smooth.x*(1-alpha)+target.x*alpha;
-    smooth.y=smooth.y*(1-alpha*.65)+target.y*(alpha*.65);
+    smooth.y=smooth.y*(1-alpha*.68)+target.y*(alpha*.68)
    }
-  }else if(!smooth){
-   smooth={x:source.videoWidth/2,y:source.videoHeight/2};
-  }
-  points.push({t,x:smooth.x,y:smooth.y});
+  }else if(!smooth)smooth={x:source.videoWidth/2,y:source.videoHeight/2};
 
-  if(n%5===0)cb(`Preparing face reframe… ${Math.round((n+1)/sampleCount*100)}%`);
-  if(n%6===0)await sleep(0);
+  points.push({t,x:smooth.x,y:smooth.y,activeId,faceCount:visible.length});
+  previousVisible=visible;
+  if(n%5===0)cb(`Preparing face reframe · active speaker… ${Math.round((n+1)/sampleCount*100)}%`);
+  if(n%5===0)await sleep(0)
  }
  return points
 }
