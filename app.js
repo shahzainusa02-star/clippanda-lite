@@ -1,4 +1,4 @@
-import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,Output,Mp4OutputFormat,BufferTarget,CanvasSource,MediaStreamAudioTrackSource} from "https://cdn.jsdelivr.net/npm/mediabunny@1.42.0/+esm";
+import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,Output,Mp4OutputFormat,BufferTarget,CanvasSource,AudioBufferSource} from "https://cdn.jsdelivr.net/npm/mediabunny@1.42.0/+esm";
 const $=id=>document.getElementById(id),source=$("source"),sample=$("sample"),sctx=sample.getContext("2d",{willReadFrequently:true}),canvas=$("renderCanvas"),ctx=canvas.getContext("2d");
 let file=null,url=null,duration=0,features=[],clips=[],editIndex=-1,detector=null,detectorTried=false,transcriber=null,loadingTranscriber=null,lastFace={x:0,y:0};
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -273,25 +273,36 @@ async function exportClip(i,cb){
  });
  output.addVideoTrack(videoOut,{frameRate:30});
 
- let audioOut=null,audioTrack=null;
+ let audioOut=null,audioInput=null,inputAudioTrack=null;
  try{
-  const captured=source.captureStream?source.captureStream():(source.mozCaptureStream?source.mozCaptureStream():null);
-  audioTrack=captured?.getAudioTracks?.()[0]||null;
-  if(audioTrack){
-   audioOut=new MediaStreamAudioTrackSource(audioTrack,{
+  audioInput=new Input({formats:ALL_FORMATS,source:new BlobSource(file)});
+  inputAudioTrack=await audioInput.getPrimaryAudioTrack();
+  if(inputAudioTrack){
+   audioOut=new AudioBufferSource({
     codec:"aac",
     bitrate:192000
    });
-   audioOut.errorPromise.catch(e=>console.warn("Audio encoder error",e));
    output.addAudioTrack(audioOut)
   }
- }catch(e){console.warn("Audio capture unavailable",e)}
+ }catch(e){
+  console.warn("Audio extraction unavailable",e);
+  if(audioInput){audioInput.dispose();audioInput=null}
+ }
 
  await output.start();
+
+ // Decode only this clip's audio. AudioBufferSource appends the first buffer at
+ // exactly 0 seconds, preventing tiny negative timestamps from live capture.
+ const audioJob=audioOut&&inputAudioTrack?(async()=>{
+  const sink=new AudioBufferSink(inputAudioTrack);
+  for await(const {buffer} of sink.buffers(c.start,c.end))await audioOut.add(buffer);
+  audioOut.close()
+ })():Promise.resolve();
+
  await source.play();
 
  const fps=30,frameDuration=1/fps,total=Math.max(frameDuration,c.end-c.start);
- let frameNumber=0,nextFrameTime=0,finished=false;
+ let frameNumber=0,nextFrameTime=0,finished=false,renderError=null;
  try{
   await new Promise((resolve,reject)=>{
    const tick=async()=>{
@@ -323,12 +334,15 @@ async function exportClip(i,cb){
    };
    requestAnimationFrame(tick)
   });
- }finally{
+ }catch(e){renderError=e}
+ finally{
   source.pause();
-  videoOut.close();
-  if(audioOut)audioOut.close();
-  if(audioTrack)audioTrack.stop()
+  videoOut.close()
  }
+
+ try{await audioJob}
+ finally{if(audioInput)audioInput.dispose()}
+ if(renderError){await output.cancel().catch(()=>{});throw renderError}
 
  cb("Finalizing smooth MP4…");
  await output.finalize();
