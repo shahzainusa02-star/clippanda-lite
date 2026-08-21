@@ -1,4 +1,4 @@
-import {Input,ALL_FORMATS,BlobSource,AudioBufferSink} from "https://cdn.jsdelivr.net/npm/mediabunny@1.42.0/+esm";
+import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,Output,Mp4OutputFormat,BufferTarget,CanvasSource,MediaStreamAudioTrackSource,Quality} from "https://cdn.jsdelivr.net/npm/mediabunny@1.42.0/+esm";
 const $=id=>document.getElementById(id),source=$("source"),sample=$("sample"),sctx=sample.getContext("2d",{willReadFrequently:true}),canvas=$("renderCanvas"),ctx=canvas.getContext("2d");
 let file=null,url=null,duration=0,features=[],clips=[],editIndex=-1,detector=null,detectorTried=false,transcriber=null,loadingTranscriber=null,lastFace={x:0,y:0};
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -258,54 +258,82 @@ async function exportClip(i,cb){
  await seek(c.start);
  source.muted=false;
 
- if(!canvas.captureStream||!window.MediaRecorder)
-  throw new Error("Local export is not supported by this browser");
+ if(!window.VideoEncoder)
+  throw new Error("Smooth MP4 export needs an updated Chrome or Edge browser");
 
- const cs=canvas.captureStream(30);
- let ats=[];
+ // Mediabunny writes explicit, monotonic 30 FPS timestamps. This avoids the
+ // duplicate MP4 timestamps produced by Chrome's MediaRecorder implementation.
+ const target=new BufferTarget();
+ const output=new Output({format:new Mp4OutputFormat(),target});
+ const videoOut=new CanvasSource(canvas,{
+  codec:"avc",
+  quality:new Quality({bitrate:5500000}),
+  hardwareAcceleration:"prefer-hardware",
+  keyFrameInterval:2
+ });
+ output.addVideoTrack(videoOut,{frameRate:30});
+
+ let audioOut=null,audioTrack=null;
  try{
-  const vs=source.captureStream?source.captureStream():(source.mozCaptureStream?source.mozCaptureStream():null);
-  if(vs)ats=vs.getAudioTracks()
- }catch{}
+  const captured=source.captureStream?source.captureStream():(source.mozCaptureStream?source.mozCaptureStream():null);
+  audioTrack=captured?.getAudioTracks?.()[0]||null;
+  if(audioTrack){
+   audioOut=new MediaStreamAudioTrackSource(audioTrack,{
+    codec:"aac",
+    quality:new Quality({bitrate:192000})
+   });
+   audioOut.errorPromise.catch(e=>console.warn("Audio encoder error",e));
+   output.addAudioTrack(audioOut)
+  }
+ }catch(e){console.warn("Audio capture unavailable",e)}
 
- const stream=new MediaStream([...cs.getVideoTracks(),...ats]);
- const mt=mime();
- const rec=new MediaRecorder(stream,mt?{mimeType:mt,videoBitsPerSecond:5500000}:undefined);
- const parts=[];
- rec.ondataavailable=e=>{if(e.data?.size)parts.push(e.data)};
- const stopped=new Promise((r,j)=>{rec.onstop=r;rec.onerror=e=>j(e.error||new Error("Recorder failed"))});
-
- rec.start(500);
+ await output.start();
  await source.play();
 
- await new Promise(done=>{
-  const tick=()=>{
-   const t=source.currentTime;
-   const face=faceAt(facePath,t);
+ const fps=30,frameDuration=1/fps,total=Math.max(frameDuration,c.end-c.start);
+ let frameNumber=0,nextFrameTime=0,finished=false;
+ try{
+  await new Promise((resolve,reject)=>{
+   const tick=async()=>{
+    if(finished)return;
+    try{
+     const t=Math.min(c.end,source.currentTime);
+     const relative=Math.max(0,t-c.start);
 
-   ctx.fillStyle="#000";
-   ctx.fillRect(0,0,W,H);
+     // Add every required output frame once, using exact sequential timestamps.
+     while(nextFrameTime<=relative+frameDuration/2&&nextFrameTime<total){
+      const face=faceAt(facePath,t);
+      ctx.fillStyle="#000";
+      ctx.fillRect(0,0,W,H);
+      if($("layout").value==="fit")drawFit(source);
+      else drawCover(source,face.x,face.y);
+      drawText(c,t);
 
-   if($("layout").value==="fit")drawFit(source);
-   else drawCover(source,face.x,face.y);
+      await videoOut.add(nextFrameTime,Math.min(frameDuration,total-nextFrameTime),{
+       keyFrame:frameNumber%(fps*2)===0
+      });
+      frameNumber++;
+      nextFrameTime=frameNumber/fps
+     }
 
-   drawText(c,t);
-
-   cb(`Rendering… ${Math.round(Math.max(0,Math.min(1,(t-c.start)/(c.end-c.start)))*100)}%`);
-
-   if(t>=c.end||source.ended)return done();
+     cb(`Rendering… ${Math.round(Math.max(0,Math.min(1,relative/total))*100)}%`);
+     if(t>=c.end||source.ended){finished=true;resolve();return}
+     requestAnimationFrame(tick)
+    }catch(e){finished=true;reject(e)}
+   };
    requestAnimationFrame(tick)
-  };
-  tick()
- });
+  });
+ }finally{
+  source.pause();
+  videoOut.close();
+  if(audioOut)audioOut.close();
+  if(audioTrack)audioTrack.stop()
+ }
 
- source.pause();
- rec.stop();
- await stopped;
-
- const blob=new Blob(parts,{type:rec.mimeType||"video/webm"});
- const ext=(blob.type||"").includes("mp4")?"mp4":"webm";
- return{blob,ext}
+ cb("Finalizing smooth MP4…");
+ await output.finalize();
+ const blob=new Blob([target.buffer],{type:"video/mp4"});
+ return{blob,ext:"mp4"}
 }
 function save(blob,name){const u=URL.createObjectURL(blob),a=document.createElement("a");a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),30000)}
 function exportUi(message){
@@ -320,7 +348,7 @@ function exportUi(message){
  }else if(message.startsWith("Rendering")){
   const m=message.match(/(\d+)%/);
   pct=60+(m?Math.round(+m[1]*.4):0);
- }
+ }else if(message.startsWith("Finalizing smooth MP4"))pct=99;
  bar.style.width=`${Math.min(100,pct)}%`;
 }
 window.quickExport=async(i,b)=>{const s=$(`cardStatus${i}`);b.disabled=true;try{const r=await exportClip(i,m=>s.textContent=m);save(r.blob,`ClipNova-Clip-${i+1}.${r.ext}`);s.className="small ok";s.textContent=`Done · ${(r.blob.size/1048576).toFixed(1)} MB`}catch(e){s.className="small error";s.textContent=e.message||e}finally{b.disabled=false}};
