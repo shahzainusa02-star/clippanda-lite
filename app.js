@@ -2,6 +2,8 @@ import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,Output,Mp4OutputFormat,Buff
 const $=id=>document.getElementById(id),source=$("source"),sample=$("sample"),sctx=sample.getContext("2d",{willReadFrequently:true}),canvas=$("renderCanvas"),ctx=canvas.getContext("2d");
 const speakerSample=document.createElement("canvas"),speakerCtx=speakerSample.getContext("2d",{willReadFrequently:true});
 speakerSample.width=320;speakerSample.height=180;
+const SAMSUNG=/SamsungBrowser|SM-A528B|SM-A52/i.test(navigator.userAgent);
+source.muted=true;source.playsInline=true;source.setAttribute("playsinline","");source.setAttribute("webkit-playsinline","");
 let file=null,url=null,duration=0,features=[],clips=[],editIndex=-1,detector=null,detectorTried=false,transcriber=null,loadingTranscriber=null,lastFace={x:0,y:0};
 const faceToggle=$("faceTracking")?.closest(".toggle");
 if(faceToggle){
@@ -11,7 +13,7 @@ if(faceToggle){
 }
 if($("layout")?.options?.[0])$("layout").options[0].textContent="Auto Reframe · active speaker";
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-function wait(el,name,timeout=7000){return new Promise((res,rej)=>{let done=false;const end=(err)=>{if(done)return;done=true;clearTimeout(t);el.removeEventListener(name,ok);el.removeEventListener("error",bad);err?rej(err):res()},ok=()=>end(),bad=()=>end(new Error("Video could not be read")),t=setTimeout(()=>end(new Error("Timed out")),timeout);el.addEventListener(name,ok,{once:true});el.addEventListener("error",bad,{once:true})})}
+function wait(el,name,timeout=SAMSUNG?20000:7000){return new Promise((res,rej)=>{let done=false;const end=(err)=>{if(done)return;done=true;clearTimeout(t);el.removeEventListener(name,ok);el.removeEventListener("error",bad);err?rej(err):res()},ok=()=>end(),bad=()=>end(new Error("Video could not be read")),t=setTimeout(()=>end(new Error("Timed out")),timeout);el.addEventListener(name,ok,{once:true});el.addEventListener("error",bad,{once:true})})}
 async function meta(el=source){if(el.readyState>=1&&Number.isFinite(el.duration))return;await wait(el,"loadedmetadata")};async function seek(t,el=source){return new Promise(r=>{let x=false;const done=()=>{if(x)return;x=true;el.removeEventListener("seeked",done);r()};el.addEventListener("seeked",done,{once:true});el.currentTime=Math.max(0,Math.min(t,(el.duration||duration)-.03));setTimeout(done,1200)})};function fmt(t){t=Math.max(0,+t||0);return `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,"0")}`}
 $("file").onchange=async()=>{file=$("file").files?.[0]||null;clips=[];$("resultsCard").classList.add("hidden");if(url)URL.revokeObjectURL(url);if(!file)return;url=URL.createObjectURL(file);source.src=url;$("fileInfo").textContent=`${file.name} · reading…`;try{await meta();duration=source.duration;$("fileInfo").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB · ${fmt(duration)}`;$("startSec").value="0.00";$("endSec").value=(duration/60).toFixed(2);$("startSec").max=(duration/60).toFixed(2);$("endSec").max=(duration/60).toFixed(2);$("rangeBox").classList.remove("hidden");$("settings").classList.remove("hidden");syncRange()}catch(e){$("fileInfo").textContent=e.message}};
 function syncRange(){let s=Math.max(0,(+$("startSec").value||0)*60),e=Math.min(duration,(+$("endSec").value||duration/60)*60);if(e<s+.5)e=Math.min(duration,s+.5);if(s>e-.5)s=Math.max(0,e-.5);$("startSec").value=(s/60).toFixed(2);$("endSec").value=(e/60).toFixed(2);$("startRange").value=duration?s/duration*100:0;$("endRange").value=duration?e/duration*100:100;$("rangeText").textContent=`Analyze ${fmt(s)} – ${fmt(e)} (${fmt(e-s)})`};$("startRange").oninput=()=>{$("startSec").value=(duration*+$("startRange").value/100/60).toFixed(2);syncRange()};$("endRange").oninput=()=>{$("endSec").value=(duration*+$("endRange").value/100/60).toFixed(2);syncRange()};$("startSec").onchange=syncRange;$("endSec").onchange=syncRange;
@@ -20,8 +22,24 @@ function stats(prev){sctx.drawImage(source,0,0,200,112);const d=sctx.getImageDat
 async function analyze(){const s=(+$("startSec").value)*60,e=(+$("endSec").value)*60,span=e-s,n=Math.min(260,Math.max(24,Math.ceil(span))),det=await initDetector();features=[];let prev=null;for(let i=0;i<n;i++){const t=s+(span-.05)*(i/(n-1));await seek(t);const f=stats(prev);prev=f.g;let face=0;if(det&&i%2===0){try{const r=det.detect(source);if(r?.detections?.length){const b=r.detections.reduce((a,b)=>b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a);face=Math.min(1,(b.boundingBox.width*b.boundingBox.height)/(source.videoWidth*source.videoHeight)*8+.3)}}catch{}}const scene=Math.min(1,f.motion*2.4),score=f.motion*.4+scene*.25+f.edge*.2+face*.12+Math.min(1,Math.abs(f.lum-.5)+.2)*.03;features.push({t,score,face});if(i%3===0){$("bar").style.width=`${Math.round(5+78*(i+1)/n)}%`;$("status").textContent=`Analyzing ${i+1}/${n} frames…`}if(i%6===0)await sleep(0)}}
 function choose(){const rs=(+$("startSec").value)*60,re=(+$("endSec").value)*60,len=+$("clipLength").value,count=+$("clipCount").value;if(re-rs<=len)return[{start:rs,end:re,score:90,words:null,transcript:""}];const wins=[],step=Math.max(2,len/6);for(let st=rs;st<=re-len+.001;st+=step){const en=st+len,a=features.filter(x=>x.t>=st&&x.t<en);if(!a.length)continue;const vals=a.map(x=>x.score),avg=vals.reduce((x,y)=>x+y,0)/vals.length,peak=Math.max(...vals),early=a.filter(x=>x.t<st+len/3),hook=early.length?Math.max(...early.map(x=>x.score)):0,faces=a.reduce((x,y)=>x+y.face,0)/a.length;wins.push({start:st,end:en,raw:avg*.48+peak*.31+hook*.15+faces*.06,words:null,transcript:""})}wins.sort((a,b)=>b.raw-a.raw);const out=[];for(const w of wins){if(out.some(c=>Math.max(0,Math.min(c.end,w.end)-Math.max(c.start,w.start))>len*.32))continue;out.push(w);if(out.length>=count)break}for(const w of wins){if(out.length>=count)break;if(!out.includes(w))out.push(w)}const lo=Math.min(...out.map(x=>x.raw)),hi=Math.max(...out.map(x=>x.raw)),sp=Math.max(.0001,hi-lo);out.forEach(x=>x.score=Math.round(70+29*(x.raw-lo)/sp));return out.sort((a,b)=>a.start-b.start)}
 $("generate").onclick=async()=>{if(!file)return;$("generate").disabled=true;$("status").className="small";$("status").textContent="Starting…";$("bar").style.width="2%";try{await analyze();clips=choose();renderCards();$("bar").style.width="100%";$("status").textContent=`Generated ${clips.length} clips.`;$("resultsCard").classList.remove("hidden");$("resultsCard").scrollIntoView({behavior:"smooth"})}catch(e){$("status").className="small error";$("status").textContent=e.message||e}finally{$("generate").disabled=false}};
-function renderCards(){$("results").innerHTML=clips.map((c,i)=>`<article class="clip"><div class="row"><div><b>Clip ${i+1}</b><div class="small">${fmt(c.start)} – ${fmt(c.end)} · ${(c.end-c.start).toFixed(1)}s</div></div><div class="score">${c.score}/100</div></div><video controls playsinline preload="metadata" src="${url}#t=${c.start},${c.end}"></video><div style="margin-top:7px"><span class="badge">${esc($("aspect").selectedOptions[0].text)}</span><span class="badge">${esc($("layout").selectedOptions[0].text)}</span>${c.words?'<span class="badge">Captions ✓</span>':''}</div><div class="row" style="margin-top:10px"><button class="secondary" onclick="window.openEdit(${i})">Edit clip</button><button class="green" onclick="window.quickExport(${i},this)">Create & Download</button></div><div id="cardStatus${i}" class="small"></div></article>`).join("")}
-window.openEdit=async i=>{editIndex=i;const c=clips[i];$("editTitle").textContent=`Edit Clip ${i+1}`;$("editStart").value=(c.start/60).toFixed(2);$("editEnd").value=(c.end/60).toFixed(2);$("transcript").textContent=c.transcript||"Captions not prepared yet.";$("exportStatus").className="small";$("exportStatus").textContent="Ready to export.";$("exportBar").style.width="0%";const v=$("editVideo");v.src=url;await meta(v).catch(()=>{});v.currentTime=c.start;$("modal").classList.remove("hidden")};$("close").onclick=()=>{$("editVideo").pause();$("modal").classList.add("hidden")};$("applyTrim").onclick=()=>{if(editIndex<0)return;const c=clips[editIndex],s=(+$("editStart").value)*60,e=(+$("editEnd").value)*60;c.start=Math.max(0,Math.min(duration-.2,s));c.end=Math.max(c.start+.2,Math.min(duration,e));$("editStart").value=(c.start/60).toFixed(2);$("editEnd").value=(c.end/60).toFixed(2);c.words=null;c.transcript="";$("transcript").textContent="Trim changed. Prepare captions again if needed.";renderCards()};
+function previewHtml(c,i){
+ if(SAMSUNG)return `<video class="clipPreview" controls playsinline webkit-playsinline preload="none"></video><button class="secondary previewButton" onclick="window.loadPreview(${i},this)">Load preview</button>`;
+ return `<video class="clipPreview" controls playsinline preload="metadata" src="${url}#t=${c.start},${c.end}"></video>`
+}
+function releasePreviews(keep=null){
+ document.querySelectorAll(".clipPreview").forEach(v=>{
+  if(v===keep)return;
+  try{v.pause();v.removeAttribute("src");v.load()}catch{}
+ });
+ document.querySelectorAll(".previewButton").forEach(b=>{if(!keep||b.previousElementSibling!==keep)b.classList.remove("hidden")})
+}
+window.loadPreview=(i,b)=>{
+ const v=b.previousElementSibling,c=clips[i];
+ releasePreviews(v);v.src=`${url}#t=${c.start},${c.end}`;v.load();b.classList.add("hidden");
+ v.play().catch(()=>{})
+};
+function renderCards(){$("results").innerHTML=clips.map((c,i)=>`<article class="clip"><div class="row"><div><b>Clip ${i+1}</b><div class="small">${fmt(c.start)} – ${fmt(c.end)} · ${(c.end-c.start).toFixed(1)}s</div></div><div class="score">${c.score}/100</div></div>${previewHtml(c,i)}<div style="margin-top:7px"><span class="badge">${esc($("aspect").selectedOptions[0].text)}</span><span class="badge">${esc($("layout").selectedOptions[0].text)}</span>${c.words?.length?'<span class="badge">Captions ✓</span>':''}</div><div class="row" style="margin-top:10px"><button class="secondary" onclick="window.openEdit(${i})">Edit clip</button><button class="green" onclick="window.quickExport(${i},this)">Create & Download</button></div><div id="cardStatus${i}" class="small"></div></article>`).join("")}
+window.openEdit=async i=>{releasePreviews();editIndex=i;const c=clips[i];$("editTitle").textContent=`Edit Clip ${i+1}`;$("editStart").value=(c.start/60).toFixed(2);$("editEnd").value=(c.end/60).toFixed(2);$("transcript").textContent=c.transcript||"Captions not prepared yet.";$("exportStatus").className="small";$("exportStatus").textContent="Ready to export.";$("exportBar").style.width="0%";const v=$("editVideo");v.src=url;await meta(v).catch(()=>{});v.currentTime=c.start;$("modal").classList.remove("hidden")};$("close").onclick=()=>{const v=$("editVideo");v.pause();if(SAMSUNG){v.removeAttribute("src");v.load()}$("modal").classList.add("hidden")};$("applyTrim").onclick=()=>{if(editIndex<0)return;const c=clips[editIndex],s=(+$("editStart").value)*60,e=(+$("editEnd").value)*60;c.start=Math.max(0,Math.min(duration-.2,s));c.end=Math.max(c.start+.2,Math.min(duration,e));$("editStart").value=(c.start/60).toFixed(2);$("editEnd").value=(c.end/60).toFixed(2);c.words=null;c.transcript="";c.captionSkipped=false;$("transcript").textContent="Trim changed. Prepare captions again if needed.";renderCards()};
 async function audio16k(start,end,cb){const input=new Input({formats:ALL_FORMATS,source:new BlobSource(file)});try{const track=await input.getPrimaryAudioTrack();if(!track)throw new Error("No audio track found");const sink=new AudioBufferSink(track),parts=[];let total=0,sr=0;for await(const {buffer,timestamp} of sink.buffers(start,end)){sr=buffer.sampleRate;const mono=new Float32Array(buffer.length);for(let ch=0;ch<buffer.numberOfChannels;ch++){const d=buffer.getChannelData(ch);for(let i=0;i<mono.length;i++)mono[i]+=d[i]/buffer.numberOfChannels}parts.push(mono);total+=mono.length;cb(`Extracting audio… ${Math.round(Math.max(0,Math.min(1,(timestamp-start)/(end-start)))*100)}%`)}if(!total)throw new Error("Audio could not be decoded");const all=new Float32Array(total);let o=0;for(const p of parts){all.set(p,o);o+=p.length}if(sr===16000)return all;const ratio=sr/16000,n=Math.floor(all.length/ratio),out=new Float32Array(n);for(let i=0;i<n;i++){const x=i*ratio,j=Math.floor(x),f=x-j;out[i]=(all[j]||0)*(1-f)+(all[Math.min(all.length-1,j+1)]||0)*f}return out}finally{input.dispose()}}
 async function getWhisper(cb){
  if(transcriber)return transcriber;
@@ -31,6 +49,7 @@ async function getWhisper(cb){
   const {env,pipeline}=await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/+esm");
   env.allowLocalModels=false;
   try{env.useBrowserCache=true}catch{}
+  if(SAMSUNG){try{env.backends.onnx.wasm.numThreads=1}catch{}}
   let last=-1;
   const progress_callback=p=>{
    try{
@@ -44,11 +63,19 @@ async function getWhisper(cb){
   };
   const model="onnx-community/whisper-tiny";
   const cpuOpts={dtype:"q4",progress_callback};
-  if("gpu" in navigator){
+  if("gpu" in navigator&&!SAMSUNG){
    try{return await pipeline("automatic-speech-recognition",model,{dtype:"q4",device:"webgpu",progress_callback})}
    catch(e){console.warn("WebGPU Whisper failed; using browser CPU",e)}
   }
-  return await pipeline("automatic-speech-recognition",model,cpuOpts);
+  try{return await pipeline("automatic-speech-recognition",model,cpuOpts)}
+  catch(e){
+   if(!SAMSUNG)throw e;
+   console.warn("Samsung Whisper download failed; retrying without browser cache",e);
+   cb("Samsung browser: retrying AI caption download…");
+   try{env.useBrowserCache=false}catch{}
+   await sleep(800);
+   return await pipeline("automatic-speech-recognition",model,cpuOpts)
+  }
  })();
  try{transcriber=await loadingTranscriber;cb("Whisper AI model ready.");return transcriber}
  finally{loadingTranscriber=null}
@@ -328,6 +355,17 @@ function faceAt(path,t){
  return{x:a.x+(b.x-a.x)*u,y:a.y+(b.y-a.y)*u}
 }
 
+async function prepareSamsungSource(t){
+ releasePreviews();
+ const editVideo=$("editVideo");
+ if(SAMSUNG&&editVideo){try{editVideo.pause();editVideo.removeAttribute("src");editVideo.load()}catch{}}
+ source.pause();source.muted=true;source.playsInline=true;
+ if(SAMSUNG||source.error||source.readyState<1){
+  source.removeAttribute("src");source.load();source.src=url;source.load();await meta(source)
+ }
+ await seek(t)
+}
+
 async function exportClip(i,cb){
  const c=clips[i];
 
@@ -335,8 +373,16 @@ async function exportClip(i,cb){
  // 1) Whisper transcription, 2) face reframe preparation, 3) rendering.
  if($("captions").checked&&!c.words){
   cb("Transcribing with Whisper AI…");
-  await captionsFor(i,()=>cb("Transcribing with Whisper AI…"));
+  try{await captionsFor(i,m=>cb(m||"Transcribing with Whisper AI…"));c.captionSkipped=false}
+  catch(e){
+   if(!SAMSUNG)throw e;
+   console.warn("Samsung caption model unavailable; continuing without new captions",e);
+   c.words=[];c.captionSkipped=true;c.transcript="Samsung could not download the AI caption model. The clip was exported without new captions.";
+   cb("Samsung caption download unavailable · continuing export…")
+  }
  }
+
+ await prepareSamsungSource(c.start);
 
  const [W,H]=size();
  canvas.width=W;canvas.height=H;
@@ -347,7 +393,7 @@ async function exportClip(i,cb){
 
  cb("Rendering… 0%");
  await seek(c.start);
- source.muted=false;
+ source.muted=true;
 
  if(!window.VideoEncoder)
   throw new Error("Smooth MP4 export needs an updated Chrome or Edge browser");
@@ -390,7 +436,14 @@ async function exportClip(i,cb){
   audioOut.close()
  })():Promise.resolve();
 
- await source.play();
+ try{await source.play()}
+ catch(e){
+  if(!SAMSUNG)throw e;
+  console.warn("Samsung video decoder retry",e);
+  cb("Samsung browser: restarting video decoder…");
+  await prepareSamsungSource(c.start);
+  await source.play()
+ }
 
  const fps=30,frameDuration=1/fps,total=Math.max(frameDuration,c.end-c.start);
  let frameNumber=0,nextFrameTime=0,finished=false,renderError=null;
@@ -456,6 +509,6 @@ function exportUi(message){
  }else if(message.startsWith("Finalizing smooth MP4"))pct=99;
  bar.style.width=`${Math.min(100,pct)}%`;
 }
-window.quickExport=async(i,b)=>{const s=$(`cardStatus${i}`);b.disabled=true;try{const r=await exportClip(i,m=>s.textContent=m);save(r.blob,`ClipNova-Clip-${i+1}.${r.ext}`);s.className="small ok";s.textContent=`Done · ${(r.blob.size/1048576).toFixed(1)} MB`}catch(e){s.className="small error";s.textContent=e.message||e}finally{b.disabled=false}};
-$("exportOne").onclick=async()=>{const b=$("exportOne");b.disabled=true;const old=b.textContent;b.textContent="Exporting…";$("exportBar").style.width="0%";try{const r=await exportClip(editIndex,exportUi);save(r.blob,`ClipNova-Clip-${editIndex+1}.${r.ext}`);$("exportBar").style.width="100%";$("exportStatus").className="small ok";$("exportStatus").textContent="Done";}catch(e){$("exportStatus").className="small error";$("exportStatus").textContent=e.message||e}finally{b.disabled=false;b.textContent=old}};
-$("exportAll").onclick=async()=>{const b=$("exportAll");b.disabled=true;try{for(let i=0;i<clips.length;i++){const s=$(`cardStatus${i}`),r=await exportClip(i,m=>s.textContent=`Batch: ${m}`);save(r.blob,`ClipNova-Clip-${i+1}.${r.ext}`);s.textContent="Exported";await sleep(500)}}finally{b.disabled=false}};
+window.quickExport=async(i,b)=>{const s=$(`cardStatus${i}`);b.disabled=true;try{const r=await exportClip(i,m=>s.textContent=m);save(r.blob,`ClipNova-Clip-${i+1}.${r.ext}`);s.className="small ok";s.textContent=clips[i].captionSkipped?`Done · ${(r.blob.size/1048576).toFixed(1)} MB · without new captions`:`Done · ${(r.blob.size/1048576).toFixed(1)} MB`}catch(e){s.className="small error";s.textContent=e.message||e}finally{b.disabled=false}};
+$("exportOne").onclick=async()=>{const b=$("exportOne");b.disabled=true;const old=b.textContent;b.textContent="Exporting…";$("exportBar").style.width="0%";try{const r=await exportClip(editIndex,exportUi);save(r.blob,`ClipNova-Clip-${editIndex+1}.${r.ext}`);$("exportBar").style.width="100%";$("exportStatus").className="small ok";$("exportStatus").textContent=clips[editIndex].captionSkipped?"Done · without new captions":"Done";}catch(e){$("exportStatus").className="small error";$("exportStatus").textContent=e.message||e}finally{b.disabled=false;b.textContent=old}};
+$("exportAll").onclick=async()=>{const b=$("exportAll");b.disabled=true;try{for(let i=0;i<clips.length;i++){const s=$(`cardStatus${i}`),r=await exportClip(i,m=>s.textContent=`Batch: ${m}`);save(r.blob,`ClipNova-Clip-${i+1}.${r.ext}`);s.textContent=clips[i].captionSkipped?"Exported · without new captions":"Exported";await sleep(500)}}finally{b.disabled=false}};
