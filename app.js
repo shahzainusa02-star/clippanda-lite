@@ -3,7 +3,7 @@ const $=id=>document.getElementById(id),source=$("source"),sample=$("sample"),sc
 const speakerSample=document.createElement("canvas"),speakerCtx=speakerSample.getContext("2d",{willReadFrequently:true});
 speakerSample.width=320;speakerSample.height=180;
 const MOBILE=/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)||navigator.maxTouchPoints>1||matchMedia("(pointer:coarse)").matches;
-source.muted=true;source.playsInline=true;source.setAttribute("playsinline","");source.setAttribute("webkit-playsinline","");
+source.muted=true;source.playsInline=true;source.crossOrigin="anonymous";source.setAttribute("playsinline","");source.setAttribute("webkit-playsinline","");source.setAttribute("crossorigin","anonymous");
 let file=null,url=null,sourceUrl=null,duration=0,features=[],clips=[],editIndex=-1,detector=null,detectorTried=false,transcriber=null,loadingTranscriber=null,lastFace={x:0,y:0};
 const faceToggle=$("faceTracking")?.closest(".toggle");
 if(faceToggle){
@@ -260,7 +260,7 @@ async function buildFacePath(c,det,cb){
  const sampleCount=Math.min(300,Math.max(18,Math.ceil(span/.35)));
  const step=span/Math.max(1,sampleCount-1);
  const points=[],tracks=new Map();
- let previousVisible=[],nextTrackId=1,activeId=null,challengerId=null,challengerFrames=0,smooth=null;
+ let previousVisible=[],nextTrackId=1,activeId=null,challengerId=null,challengerFrames=0,smooth=null,pixelSampling=!MOBILE;
 
  for(let n=0;n<sampleCount;n++){
   const t=Math.min(c.end-.03,c.start+n*step);
@@ -268,8 +268,19 @@ async function buildFacePath(c,det,cb){
   let detections=[];
   try{detections=det.detect(source)?.detections||[]}catch{}
 
-  speakerCtx.drawImage(source,0,0,speakerSample.width,speakerSample.height);
-  const frame=speakerCtx.getImageData(0,0,speakerSample.width,speakerSample.height);
+  let frame=null;
+  if(pixelSampling){
+   try{
+    speakerCtx.clearRect(0,0,speakerSample.width,speakerSample.height);
+    speakerCtx.drawImage(source,0,0,speakerSample.width,speakerSample.height);
+    frame=speakerCtx.getImageData(0,0,speakerSample.width,speakerSample.height)
+   }catch(e){
+    // Some Samsung Chrome versions incorrectly mark a local video canvas as
+    // cross-origin after repeated seeks. Continue with landmark motion instead.
+    console.warn("Pixel speaker sampling unavailable; using face landmarks",e);
+    pixelSampling=false;speakerSample.width=320;speakerSample.height=180
+   }
+  }
   const faces=detections.map(normalizedFaceBox).filter(Boolean).sort((a,b)=>b.w*b.h-a.w*a.h);
   const usedTracks=new Set(),visible=[];
 
@@ -286,15 +297,19 @@ async function buildFacePath(c,det,cb){
 
    const id=match?.id??nextTrackId++;
    const old=tracks.get(id)||{id,activity:0,box:null,signature:null};
-   const signature=mouthSignature(frame,box);
-   const mouth=signatureChange(signature,old.signature);
+   const signature=frame?mouthSignature(frame,box):null;
+   const mouth=frame?signatureChange(signature,old.signature):0;
    const movement=old.box?Math.min(1,Math.hypot(box.cx-old.box.cx,box.cy-old.box.cy)/Math.max(20,old.box.w)*.8):0;
-   const mouthScore=Math.min(1,mouth*4.8);
-   const instantActivity=mouthScore*.82+movement*.18;
+   const landmarkMotion=old.box?Math.min(1,Math.hypot(
+    (box.mouthX-box.x)/Math.max(1,box.w)-(old.box.mouthX-old.box.x)/Math.max(1,old.box.w),
+    (box.mouthY-box.y)/Math.max(1,box.h)-(old.box.mouthY-old.box.y)/Math.max(1,old.box.h)
+   )*8):0;
+   const mouthScore=frame?Math.min(1,mouth*4.8):landmarkMotion;
+   const instantActivity=frame?mouthScore*.82+movement*.18:mouthScore*.68+movement*.32;
    const activity=old.activity*.48+instantActivity*.52;
    const area=Math.min(1,Math.sqrt((box.w*box.h)/Math.max(1,source.videoWidth*source.videoHeight)/.11));
    const center=Math.max(0,1-Math.abs(box.cx/source.videoWidth-.5)*1.35);
-   const score=mouthScore*.54+activity*.25+movement*.08+area*.07+center*.025+box.confidence*.035;
+   const score=mouthScore*.52+activity*.25+movement*.10+area*.07+center*.025+box.confidence*.035;
    const tr={id,box,signature,activity,mouth:mouthScore,movement,score,lastSeen:n};
    tracks.set(id,tr);usedTracks.add(id);visible.push(tr)
   }
