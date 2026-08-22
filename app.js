@@ -360,8 +360,8 @@ async function prepareMobileSource(t){
  const editVideo=$("editVideo");
  if(MOBILE&&editVideo){try{editVideo.pause();editVideo.removeAttribute("src");editVideo.load()}catch{}}
  source.pause();source.muted=true;source.playsInline=true;
- if(MOBILE||source.error||source.readyState<1){
-  source.removeAttribute("src");source.load();source.src=url;source.load();await meta(source)
+ if(source.error||source.readyState<1){
+  source.src=url;source.load();await meta(source)
  }
  await seek(t)
 }
