@@ -3,7 +3,7 @@ const $=id=>document.getElementById(id),source=$("source"),sample=$("sample"),sc
 const speakerSample=document.createElement("canvas"),speakerCtx=speakerSample.getContext("2d",{willReadFrequently:true});
 speakerSample.width=320;speakerSample.height=180;
 const MOBILE=/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)||navigator.maxTouchPoints>1||matchMedia("(pointer:coarse)").matches;
-source.muted=true;source.playsInline=true;source.crossOrigin="anonymous";source.setAttribute("playsinline","");source.setAttribute("webkit-playsinline","");source.setAttribute("crossorigin","anonymous");
+source.muted=true;source.playsInline=true;source.setAttribute("playsinline","");source.setAttribute("webkit-playsinline","");
 let file=null,url=null,sourceUrl=null,duration=0,features=[],clips=[],editIndex=-1,detector=null,detectorTried=false,transcriber=null,loadingTranscriber=null,lastFace={x:0,y:0};
 const faceToggle=$("faceTracking")?.closest(".toggle");
 if(faceToggle){
@@ -207,14 +207,14 @@ function drawText(c,t){
 }
 function mime(){return ["video/mp4;codecs=avc1.42E01E,mp4a.40.2","video/mp4","video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm"].find(t=>window.MediaRecorder&&MediaRecorder.isTypeSupported(t))||""}
 
-function normalizedFaceBox(d){
+function normalizedFaceBox(d,video=source){
  const b=d?.boundingBox;
  if(!b)return null;
  const x=Math.max(0,b.originX),y=Math.max(0,b.originY);
- const w=Math.max(1,Math.min(source.videoWidth-x,b.width));
- const h=Math.max(1,Math.min(source.videoHeight-y,b.height));
+ const w=Math.max(1,Math.min(video.videoWidth-x,b.width));
+ const h=Math.max(1,Math.min(video.videoHeight-y,b.height));
  const mouth=d.keypoints?.[3];
- return{x,y,w,h,cx:x+w/2,cy:y+h/2,mouthX:mouth?mouth.x*source.videoWidth:x+w/2,mouthY:mouth?mouth.y*source.videoHeight:y+h*.74,confidence:d.categories?.[0]?.score??.5}
+ return{x,y,w,h,cx:x+w/2,cy:y+h/2,mouthX:mouth?mouth.x*video.videoWidth:x+w/2,mouthY:mouth?mouth.y*video.videoHeight:y+h*.74,confidence:d.categories?.[0]?.score??.5}
 }
 
 function boxIou(a,b){
@@ -281,7 +281,7 @@ async function buildFacePath(c,det,cb){
     pixelSampling=false;speakerSample.width=320;speakerSample.height=180
    }
   }
-  const faces=detections.map(normalizedFaceBox).filter(Boolean).sort((a,b)=>b.w*b.h-a.w*a.h);
+  const faces=detections.map(d=>normalizedFaceBox(d,source)).filter(Boolean).sort((a,b)=>b.w*b.h-a.w*a.h);
   const usedTracks=new Set(),visible=[];
 
   for(const box of faces){
@@ -350,8 +350,8 @@ async function buildFacePath(c,det,cb){
  return points
 }
 
-function faceAt(path,t){
- if(!path?.length)return{x:source.videoWidth/2,y:source.videoHeight/2};
+function faceAt(path,t,video=source){
+ if(!path?.length)return{x:video.videoWidth/2,y:video.videoHeight/2};
  if(t<=path[0].t)return{x:path[0].x,y:path[0].y};
  if(t>=path[path.length-1].t)return{x:path[path.length-1].x,y:path[path.length-1].y};
  let lo=0,hi=path.length-1;
@@ -361,6 +361,77 @@ function faceAt(path,t){
  }
  const a=path[lo],b=path[hi],u=(t-a.t)/Math.max(.001,b.t-a.t);
  return{x:a.x+(b.x-a.x)*u,y:a.y+(b.y-a.y)*u}
+}
+
+function createLiveSpeakerTracker(video,det){
+ let previous=[],nextId=1,activeId=null,challengerId=null,challengerFrames=0;
+ let smooth={x:video.videoWidth/2,y:video.videoHeight/2};
+ return()=>{
+  let detections=[];
+  try{detections=det.detect(video)?.detections||[]}catch{}
+  const boxes=detections.map(d=>normalizedFaceBox(d,video)).filter(Boolean).sort((a,b)=>b.w*b.h-a.w*a.h);
+  const used=new Set(),visible=[];
+  for(const box of boxes){
+   let match=null,bestCost=Infinity;
+   for(const old of previous){
+    if(used.has(old.id))continue;
+    const distance=Math.hypot((box.cx-old.box.cx)/Math.max(1,video.videoWidth),(box.cy-old.box.cy)/Math.max(1,video.videoHeight));
+    const overlap=boxIou(box,old.box),cost=distance*2.7+(1-overlap)*.3;
+    if((overlap>.02||distance<.2)&&cost<bestCost){match=old;bestCost=cost}
+   }
+   const id=match?.id??nextId++;
+   const movement=match?Math.min(1,Math.hypot(box.cx-match.box.cx,box.cy-match.box.cy)/Math.max(20,match.box.w)):0;
+   const mouthMotion=match?Math.min(1,Math.hypot(
+    (box.mouthX-box.x)/Math.max(1,box.w)-(match.box.mouthX-match.box.x)/Math.max(1,match.box.w),
+    (box.mouthY-box.y)/Math.max(1,box.h)-(match.box.mouthY-match.box.y)/Math.max(1,match.box.h)
+   )*9):0;
+   const activity=(match?.activity||0)*.45+(mouthMotion*.72+movement*.28)*.55;
+   const area=Math.min(1,Math.sqrt((box.w*box.h)/Math.max(1,video.videoWidth*video.videoHeight)/.11));
+   const center=Math.max(0,1-Math.abs(box.cx/video.videoWidth-.5)*1.35);
+   const score=mouthMotion*.50+activity*.28+movement*.10+area*.07+center*.025+box.confidence*.025;
+   const track={id,box,activity,mouth:mouthMotion,score};used.add(id);visible.push(track)
+  }
+  const best=visible.reduce((a,b)=>!a||b.score>a.score?b:a,null);
+  const current=visible.find(x=>x.id===activeId)||null;
+  let switched=false;
+  if(!current){if(best){activeId=best.id;switched=true}challengerId=null;challengerFrames=0}
+  else if(best&&best.id!==activeId&&best.score>current.score+.08){
+   if(challengerId===best.id)challengerFrames++;else{challengerId=best.id;challengerFrames=1}
+   if(challengerFrames>=2){activeId=best.id;switched=true;challengerId=null;challengerFrames=0}
+  }else{challengerId=null;challengerFrames=0}
+  const chosen=visible.find(x=>x.id===activeId)||best;
+  if(chosen){
+   const alpha=switched?.7:.32;
+   smooth.x=smooth.x*(1-alpha)+chosen.box.cx*alpha;
+   smooth.y=smooth.y*(1-alpha*.68)+chosen.box.cy*(alpha*.68)
+  }
+  previous=visible;
+  return smooth
+ }
+}
+
+async function createMobileRenderVideo(t){
+ source.pause();
+ try{source.removeAttribute("src");source.load()}catch{}
+ if(sourceUrl&&sourceUrl!==url)URL.revokeObjectURL(sourceUrl);
+ sourceUrl=null;
+ await sleep(120);
+ let lastError=null;
+ for(let attempt=0;attempt<2;attempt++){
+  const video=document.createElement("video"),videoUrl=URL.createObjectURL(file);
+  video.className="mediaSource";video.muted=true;video.playsInline=true;video.preload="auto";
+  video.setAttribute("playsinline","");video.setAttribute("webkit-playsinline","");
+  document.body.appendChild(video);video.src=videoUrl;video.load();
+  try{
+   await meta(video);await seek(t,video);
+   return{video,dispose:()=>{try{video.pause();video.removeAttribute("src");video.load();video.remove()}catch{}URL.revokeObjectURL(videoUrl)}}
+  }catch(e){
+   lastError=e;
+   try{video.pause();video.removeAttribute("src");video.load();video.remove()}catch{}
+   URL.revokeObjectURL(videoUrl);await sleep(180)
+  }
+ }
+ throw lastError||new Error("Video decoder could not start")
 }
 
 async function prepareMobileSource(t){
@@ -392,21 +463,32 @@ async function exportClip(i,cb){
   }
  }
 
- await prepareMobileSource(c.start);
+ if(MOBILE){
+  suspendPreviews();
+  const editVideo=$("editVideo");
+  if(editVideo){try{editVideo.pause();editVideo.removeAttribute("src");editVideo.load()}catch{}}
+ }else await prepareMobileSource(c.start);
 
  const [W,H]=size();
  canvas.width=W;canvas.height=H;
 
  cb("Preparing face reframe…");
  const det=$("layout").value==="auto"?await initDetector():null;
- const facePath=det?await buildFacePath(c,det,m=>cb(m.startsWith("Preparing face reframe")?m:"Preparing face reframe…")):null;
+ const facePath=det&&!MOBILE?await buildFacePath(c,det,m=>cb(m.startsWith("Preparing face reframe")?m:"Preparing face reframe…")):null;
+ if(det&&MOBILE)cb("Active speaker tracking ready · rendering in one pass…");
 
  cb("Rendering… 0%");
- await seek(c.start);
- source.muted=true;
 
  if(!window.VideoEncoder)
   throw new Error("Smooth MP4 export needs an updated Chrome or Edge browser");
+
+ let playback=source,disposePlayback=()=>{};
+ if(MOBILE){
+  const fresh=await createMobileRenderVideo(c.start);
+  playback=fresh.video;disposePlayback=fresh.dispose
+ }else{
+  await seek(c.start,playback);playback.muted=true
+ }
 
  // Mediabunny writes explicit, monotonic 30 FPS timestamps. This avoids the
  // duplicate MP4 timestamps produced by Chrome's MediaRecorder implementation.
@@ -446,32 +528,40 @@ async function exportClip(i,cb){
   audioOut.close()
  })():Promise.resolve();
 
- try{await source.play()}
+ try{await playback.play()}
  catch(e){
   if(!MOBILE)throw e;
   console.warn("Mobile video decoder retry",e);
-  cb("Mobile browser: restarting video decoder…");
-  await prepareMobileSource(c.start);
-  await source.play()
+  cb("Samsung: starting a fresh video decoder…");
+  disposePlayback();
+  const fresh=await createMobileRenderVideo(c.start);
+  playback=fresh.video;disposePlayback=fresh.dispose;
+  await playback.play()
  }
 
  const fps=30,frameDuration=1/fps,total=Math.max(frameDuration,c.end-c.start);
- let frameNumber=0,nextFrameTime=0,finished=false,renderError=null;
+ const liveTracker=det&&MOBILE?createLiveSpeakerTracker(playback,det):null;
+ let liveFace={x:playback.videoWidth/2,y:playback.videoHeight/2},lastDetection=-Infinity;
+ let frameNumber=0,nextFrameTime=0,finished=false,renderError=null,lastVideoTime=playback.currentTime,lastAdvanceAt=performance.now();
  try{
   await new Promise((resolve,reject)=>{
    const tick=async()=>{
     if(finished)return;
     try{
-     const t=Math.min(c.end,source.currentTime);
+     const t=Math.min(c.end,playback.currentTime);
      const relative=Math.max(0,t-c.start);
+     if(t>lastVideoTime+.002){lastVideoTime=t;lastAdvanceAt=performance.now()}
+     else if(performance.now()-lastAdvanceAt>8000)throw new Error("Samsung stopped video playback. Please keep this page open while exporting.");
+
+     if(liveTracker&&t-lastDetection>=.45){liveFace=liveTracker();lastDetection=t}
 
      // Add every required output frame once, using exact sequential timestamps.
      while(nextFrameTime<=relative+frameDuration/2&&nextFrameTime<total){
-      const face=faceAt(facePath,t);
+      const face=liveTracker?liveFace:faceAt(facePath,t,playback);
       ctx.fillStyle="#000";
       ctx.fillRect(0,0,W,H);
-      if($("layout").value==="fit")drawFit(source);
-      else drawCover(source,face.x,face.y);
+      if($("layout").value==="fit")drawFit(playback);
+      else drawCover(playback,face.x,face.y);
       drawText(c,t);
 
       await videoOut.add(nextFrameTime,Math.min(frameDuration,total-nextFrameTime),{
@@ -482,7 +572,7 @@ async function exportClip(i,cb){
      }
 
      cb(`Rendering… ${Math.round(Math.max(0,Math.min(1,relative/total))*100)}%`);
-     if(t>=c.end||source.ended){finished=true;resolve();return}
+     if(t>=c.end||playback.ended){finished=true;resolve();return}
      requestAnimationFrame(tick)
     }catch(e){finished=true;reject(e)}
    };
@@ -490,7 +580,7 @@ async function exportClip(i,cb){
   });
  }catch(e){renderError=e}
  finally{
-  source.pause();
+  playback.pause();disposePlayback();
   videoOut.close()
  }
 
