@@ -410,30 +410,6 @@ function createLiveSpeakerTracker(video,det){
  }
 }
 
-async function createMobileRenderVideo(t){
- source.pause();
- try{source.removeAttribute("src");source.load()}catch{}
- if(sourceUrl&&sourceUrl!==url)URL.revokeObjectURL(sourceUrl);
- sourceUrl=null;
- await sleep(120);
- let lastError=null;
- for(let attempt=0;attempt<2;attempt++){
-  const video=document.createElement("video"),videoUrl=URL.createObjectURL(file);
-  video.className="mediaSource";video.muted=true;video.playsInline=true;video.preload="auto";
-  video.setAttribute("playsinline","");video.setAttribute("webkit-playsinline","");
-  document.body.appendChild(video);video.src=videoUrl;video.load();
-  try{
-   await meta(video);await seek(t,video);
-   return{video,dispose:()=>{try{video.pause();video.removeAttribute("src");video.load();video.remove()}catch{}URL.revokeObjectURL(videoUrl)}}
-  }catch(e){
-   lastError=e;
-   try{video.pause();video.removeAttribute("src");video.load();video.remove()}catch{}
-   URL.revokeObjectURL(videoUrl);await sleep(180)
-  }
- }
- throw lastError||new Error("Video decoder could not start")
-}
-
 async function prepareMobileSource(t){
  suspendPreviews();
  const editVideo=$("editVideo");
@@ -482,13 +458,9 @@ async function exportClip(i,cb){
  if(!window.VideoEncoder)
   throw new Error("Smooth MP4 export needs an updated Chrome or Edge browser");
 
- let playback=source,disposePlayback=()=>{};
- if(MOBILE){
-  const fresh=await createMobileRenderVideo(c.start);
-  playback=fresh.video;disposePlayback=fresh.dispose
- }else{
-  await seek(c.start,playback);playback.muted=true
- }
+ const playback=source;
+ playback.pause();playback.muted=true;
+ await seek(c.start,playback);
 
  // Mediabunny writes explicit, monotonic 30 FPS timestamps. This avoids the
  // duplicate MP4 timestamps produced by Chrome's MediaRecorder implementation.
@@ -530,13 +502,7 @@ async function exportClip(i,cb){
 
  try{await playback.play()}
  catch(e){
-  if(!MOBILE)throw e;
-  console.warn("Mobile video decoder retry",e);
-  cb("Samsung: starting a fresh video decoder…");
-  disposePlayback();
-  const fresh=await createMobileRenderVideo(c.start);
-  playback=fresh.video;disposePlayback=fresh.dispose;
-  await playback.play()
+  throw new Error(MOBILE?"Samsung could not start the original video. Select the video again and retry.":(e.message||e))
  }
 
  const fps=30,frameDuration=1/fps,total=Math.max(frameDuration,c.end-c.start);
@@ -580,7 +546,7 @@ async function exportClip(i,cb){
   });
  }catch(e){renderError=e}
  finally{
-  playback.pause();disposePlayback();
+  playback.pause();
   videoOut.close()
  }
 
