@@ -1,4 +1,4 @@
-import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,Output,Mp4OutputFormat,BufferTarget,CanvasSource,AudioBufferSource} from "https://cdn.jsdelivr.net/npm/mediabunny@1.42.0/+esm";
+import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,VideoSampleSink,Output,Mp4OutputFormat,BufferTarget,CanvasSource,AudioBufferSource} from "https://cdn.jsdelivr.net/npm/mediabunny@1.42.0/+esm";
 const $=id=>document.getElementById(id),source=$("source"),sample=$("sample"),sctx=sample.getContext("2d",{willReadFrequently:true}),canvas=$("renderCanvas"),ctx=canvas.getContext("2d");
 const speakerSample=document.createElement("canvas"),speakerCtx=speakerSample.getContext("2d",{willReadFrequently:true});
 speakerSample.width=320;speakerSample.height=180;
@@ -18,8 +18,34 @@ async function meta(el=source){if(el.readyState>=1&&Number.isFinite(el.duration)
 $("file").onchange=async()=>{file=$("file").files?.[0]||null;clips=[];$("resultsCard").classList.add("hidden");if(sourceUrl&&sourceUrl!==url)URL.revokeObjectURL(sourceUrl);if(url)URL.revokeObjectURL(url);url=null;sourceUrl=null;if(!file)return;url=URL.createObjectURL(file);sourceUrl=url;source.src=sourceUrl;$("fileInfo").textContent=`${file.name} · reading…`;try{await meta();duration=source.duration;$("fileInfo").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB · ${fmt(duration)}`;$("startSec").value="0.00";$("endSec").value=(duration/60).toFixed(2);$("startSec").max=(duration/60).toFixed(2);$("endSec").max=(duration/60).toFixed(2);$("rangeBox").classList.remove("hidden");$("settings").classList.remove("hidden");syncRange()}catch(e){$("fileInfo").textContent=e.message}};
 function syncRange(){let s=Math.max(0,(+$("startSec").value||0)*60),e=Math.min(duration,(+$("endSec").value||duration/60)*60);if(e<s+.5)e=Math.min(duration,s+.5);if(s>e-.5)s=Math.max(0,e-.5);$("startSec").value=(s/60).toFixed(2);$("endSec").value=(e/60).toFixed(2);$("startRange").value=duration?s/duration*100:0;$("endRange").value=duration?e/duration*100:100;$("rangeText").textContent=`Analyze ${fmt(s)} – ${fmt(e)} (${fmt(e-s)})`};$("startRange").oninput=()=>{$("startSec").value=(duration*+$("startRange").value/100/60).toFixed(2);syncRange()};$("endRange").oninput=()=>{$("endSec").value=(duration*+$("endRange").value/100/60).toFixed(2);syncRange()};$("startSec").onchange=syncRange;$("endSec").onchange=syncRange;
 async function initDetector(){if(!$("faceTracking").checked)return null;if(detector)return detector;if(detectorTried)return null;detectorTried=true;try{const {FilesetResolver,FaceDetector}=await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/+esm");const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");detector=await FaceDetector.createFromOptions(vision,{baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",delegate:"CPU"},runningMode:"IMAGE",minDetectionConfidence:.38,minSuppressionThreshold:.25});return detector}catch(e){console.warn(e);return null}}
-function stats(prev){sctx.drawImage(source,0,0,200,112);const d=sctx.getImageData(0,0,200,112).data,g=new Uint8Array(22400);let motion=0,edge=0,lum=0;for(let i=0,p=0;i<d.length;i+=4,p++){const v=(d[i]*77+d[i+1]*150+d[i+2]*29)>>8;g[p]=v;lum+=v}if(prev)for(let i=0;i<g.length;i+=3)motion+=Math.abs(g[i]-prev[i]);for(let y=1;y<111;y+=2)for(let x=1;x<199;x+=2){const p=y*200+x;edge+=Math.abs(g[p]-g[p-1])+Math.abs(g[p]-g[p-200])}return {g,motion:prev?motion/(Math.ceil(g.length/3)*255):0,edge:edge/(100*56*2*255),lum:lum/g.length/255}}
-async function analyze(){const s=(+$("startSec").value)*60,e=(+$("endSec").value)*60,span=e-s,n=Math.min(260,Math.max(24,Math.ceil(span))),det=await initDetector();features=[];let prev=null;for(let i=0;i<n;i++){const t=s+(span-.05)*(i/(n-1));await seek(t);const f=stats(prev);prev=f.g;let face=0;if(det&&i%2===0){try{const r=det.detect(source);if(r?.detections?.length){const b=r.detections.reduce((a,b)=>b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a);face=Math.min(1,(b.boundingBox.width*b.boundingBox.height)/(source.videoWidth*source.videoHeight)*8+.3)}}catch{}}const scene=Math.min(1,f.motion*2.4),score=f.motion*.4+scene*.25+f.edge*.2+face*.12+Math.min(1,Math.abs(f.lum-.5)+.2)*.03;features.push({t,score,face});if(i%3===0){$("bar").style.width=`${Math.round(5+78*(i+1)/n)}%`;$("status").textContent=`Analyzing ${i+1}/${n} frames…`}if(i%6===0)await sleep(0)}}
+function statsPixels(prev){const d=sctx.getImageData(0,0,200,112).data,g=new Uint8Array(22400);let motion=0,edge=0,lum=0;for(let i=0,p=0;i<d.length;i+=4,p++){const v=(d[i]*77+d[i+1]*150+d[i+2]*29)>>8;g[p]=v;lum+=v}if(prev)for(let i=0;i<g.length;i+=3)motion+=Math.abs(g[i]-prev[i]);for(let y=1;y<111;y+=2)for(let x=1;x<199;x+=2){const p=y*200+x;edge+=Math.abs(g[p]-g[p-1])+Math.abs(g[p]-g[p-200])}return {g,motion:prev?motion/(Math.ceil(g.length/3)*255):0,edge:edge/(100*56*2*255),lum:lum/g.length/255}}
+function stats(prev){sctx.drawImage(source,0,0,200,112);return statsPixels(prev)}
+async function analyzeDecoded(){
+ const s=(+$("startSec").value)*60,e=(+$("endSec").value)*60,span=e-s,n=Math.min(60,Math.max(24,Math.ceil(span/90))),det=await initDetector();
+ const input=new Input({formats:ALL_FORMATS,source:new BlobSource(file)});
+ features=[];let prev=null,i=0;
+ try{
+  const track=await input.getPrimaryVideoTrack();
+  if(!track)throw new Error("No video track found");
+  const sink=new VideoSampleSink(track,{hardwareAcceleration:"prefer-hardware"});
+  const timestamps=Array.from({length:n},(_,k)=>s+(span-.05)*(k/(n-1)));
+  for await(const frameSample of sink.samplesAtTimestamps(timestamps)){
+   const t=timestamps[i];
+   if(!frameSample){features.push({t,score:0,face:0});i++;continue}
+   try{
+    frameSample.draw(sctx,0,0,200,112);
+    const f=statsPixels(prev);prev=f.g;
+    let face=0;
+    if(det&&i%2===0){try{const r=det.detect(sample);if(r?.detections?.length){const b=r.detections.reduce((a,b)=>b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a);face=Math.min(1,(b.boundingBox.width*b.boundingBox.height)/(200*112)*8+.3)}}catch{}}
+    const scene=Math.min(1,f.motion*2.4),score=f.motion*.4+scene*.25+f.edge*.2+face*.12+Math.min(1,Math.abs(f.lum-.5)+.2)*.03;
+    features.push({t,score,face})
+   }finally{frameSample.close()}
+   i++;$("bar").style.width=`${Math.round(5+78*i/n)}%`;$("status").textContent=`Analyzing ${i}/${n} frames…`;
+   if(i%4===0)await sleep(0)
+  }
+ }finally{input.dispose()}
+}
+async function analyze(){if(MOBILE)return analyzeDecoded();const s=(+$("startSec").value)*60,e=(+$("endSec").value)*60,span=e-s,n=Math.min(260,Math.max(24,Math.ceil(span))),det=await initDetector();features=[];let prev=null;for(let i=0;i<n;i++){const t=s+(span-.05)*(i/(n-1));await seek(t);const f=stats(prev);prev=f.g;let face=0;if(det&&i%2===0){try{const r=det.detect(source);if(r?.detections?.length){const b=r.detections.reduce((a,b)=>b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a);face=Math.min(1,(b.boundingBox.width*b.boundingBox.height)/(source.videoWidth*source.videoHeight)*8+.3)}}catch{}}const scene=Math.min(1,f.motion*2.4),score=f.motion*.4+scene*.25+f.edge*.2+face*.12+Math.min(1,Math.abs(f.lum-.5)+.2)*.03;features.push({t,score,face});if(i%3===0){$("bar").style.width=`${Math.round(5+78*(i+1)/n)}%`;$("status").textContent=`Analyzing ${i+1}/${n} frames…`}if(i%6===0)await sleep(0)}}
 function choose(){const rs=(+$("startSec").value)*60,re=(+$("endSec").value)*60,len=+$("clipLength").value,count=+$("clipCount").value;if(re-rs<=len)return[{start:rs,end:re,score:90,words:null,transcript:""}];const wins=[],step=Math.max(2,len/6);for(let st=rs;st<=re-len+.001;st+=step){const en=st+len,a=features.filter(x=>x.t>=st&&x.t<en);if(!a.length)continue;const vals=a.map(x=>x.score),avg=vals.reduce((x,y)=>x+y,0)/vals.length,peak=Math.max(...vals),early=a.filter(x=>x.t<st+len/3),hook=early.length?Math.max(...early.map(x=>x.score)):0,faces=a.reduce((x,y)=>x+y.face,0)/a.length;wins.push({start:st,end:en,raw:avg*.48+peak*.31+hook*.15+faces*.06,words:null,transcript:""})}wins.sort((a,b)=>b.raw-a.raw);const out=[];for(const w of wins){if(out.some(c=>Math.max(0,Math.min(c.end,w.end)-Math.max(c.start,w.start))>len*.32))continue;out.push(w);if(out.length>=count)break}for(const w of wins){if(out.length>=count)break;if(!out.includes(w))out.push(w)}const lo=Math.min(...out.map(x=>x.raw)),hi=Math.max(...out.map(x=>x.raw)),sp=Math.max(.0001,hi-lo);out.forEach(x=>x.score=Math.round(70+29*(x.raw-lo)/sp));return out.sort((a,b)=>a.start-b.start)}
 $("generate").onclick=async()=>{if(!file)return;$("generate").disabled=true;$("status").className="small";$("status").textContent="Starting…";$("bar").style.width="2%";try{await analyze();clips=choose();renderCards();$("bar").style.width="100%";$("status").textContent=`Generated ${clips.length} clips.`;$("resultsCard").classList.remove("hidden");$("resultsCard").scrollIntoView({behavior:"smooth"})}catch(e){$("status").className="small error";$("status").textContent=e.message||e}finally{$("generate").disabled=false}};
 function pausePreviews(){document.querySelectorAll(".clipPreview").forEach(v=>{try{v.pause()}catch{}})}
@@ -145,6 +171,8 @@ function overlay(){
 }
 $("editVideo").addEventListener("timeupdate",overlay);
 function size(){const a=$("aspect").value;return a==="landscape"?[1280,720]:a==="square"?[1080,1080]:[720,1280]};function drawCover(v,cx,cy){const W=canvas.width,H=canvas.height,sw=v.videoWidth,sh=v.videoHeight,tar=W/H,src=sw/sh;let sx=0,sy=0,cw=sw,ch=sh;if(src>tar){cw=sh*tar;sx=Math.max(0,Math.min(sw-cw,cx-cw/2))}else{ch=sw/tar;sy=Math.max(0,Math.min(sh-ch,cy-ch/2))}ctx.drawImage(v,sx,sy,cw,ch,0,0,W,H)}function drawFit(v){const W=canvas.width,H=canvas.height,sw=v.videoWidth,sh=v.videoHeight;ctx.save();ctx.filter="blur(28px) brightness(.62)";let s=Math.max(W/sw,H/sh);ctx.drawImage(v,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s);ctx.restore();s=Math.min(W/sw,H/sh);ctx.drawImage(v,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s)}
+function drawSampleCover(frameSample,cx,cy){const W=canvas.width,H=canvas.height,sw=frameSample.displayWidth,sh=frameSample.displayHeight,tar=W/H,src=sw/sh;let sx=0,sy=0,cw=sw,ch=sh;if(src>tar){cw=sh*tar;sx=Math.max(0,Math.min(sw-cw,cx-cw/2))}else{ch=sw/tar;sy=Math.max(0,Math.min(sh-ch,cy-ch/2))}frameSample.draw(ctx,sx,sy,cw,ch,0,0,W,H)}
+function drawSampleFit(frameSample){const W=canvas.width,H=canvas.height,sw=frameSample.displayWidth,sh=frameSample.displayHeight;ctx.save();ctx.filter="blur(28px) brightness(.62)";let s=Math.max(W/sw,H/sh);frameSample.draw(ctx,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s);ctx.restore();s=Math.min(W/sw,H/sh);frameSample.draw(ctx,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s)}
 function drawText(c,t){
  if(!$("captions").checked||!c.words?.length)return;
  let k=c.words.findIndex(w=>t>=w.start&&t<=w.end);
@@ -207,14 +235,16 @@ function drawText(c,t){
 }
 function mime(){return ["video/mp4;codecs=avc1.42E01E,mp4a.40.2","video/mp4","video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm"].find(t=>window.MediaRecorder&&MediaRecorder.isTypeSupported(t))||""}
 
+const mediaWidth=media=>media.videoWidth||media.width||1,mediaHeight=media=>media.videoHeight||media.height||1;
 function normalizedFaceBox(d,video=source){
  const b=d?.boundingBox;
  if(!b)return null;
+ const vw=mediaWidth(video),vh=mediaHeight(video);
  const x=Math.max(0,b.originX),y=Math.max(0,b.originY);
- const w=Math.max(1,Math.min(video.videoWidth-x,b.width));
- const h=Math.max(1,Math.min(video.videoHeight-y,b.height));
+ const w=Math.max(1,Math.min(vw-x,b.width));
+ const h=Math.max(1,Math.min(vh-y,b.height));
  const mouth=d.keypoints?.[3];
- return{x,y,w,h,cx:x+w/2,cy:y+h/2,mouthX:mouth?mouth.x*video.videoWidth:x+w/2,mouthY:mouth?mouth.y*video.videoHeight:y+h*.74,confidence:d.categories?.[0]?.score??.5}
+ return{x,y,w,h,cx:x+w/2,cy:y+h/2,mouthX:mouth?mouth.x*vw:x+w/2,mouthY:mouth?mouth.y*vh:y+h*.74,confidence:d.categories?.[0]?.score??.5}
 }
 
 function boxIou(a,b){
@@ -364,8 +394,9 @@ function faceAt(path,t,video=source){
 }
 
 function createLiveSpeakerTracker(video,det){
+ const vw=mediaWidth(video),vh=mediaHeight(video);
  let previous=[],nextId=1,activeId=null,challengerId=null,challengerFrames=0;
- let smooth={x:video.videoWidth/2,y:video.videoHeight/2};
+ let smooth={x:vw/2,y:vh/2};
  return()=>{
   let detections=[];
   try{detections=det.detect(video)?.detections||[]}catch{}
@@ -375,7 +406,7 @@ function createLiveSpeakerTracker(video,det){
    let match=null,bestCost=Infinity;
    for(const old of previous){
     if(used.has(old.id))continue;
-    const distance=Math.hypot((box.cx-old.box.cx)/Math.max(1,video.videoWidth),(box.cy-old.box.cy)/Math.max(1,video.videoHeight));
+    const distance=Math.hypot((box.cx-old.box.cx)/vw,(box.cy-old.box.cy)/vh);
     const overlap=boxIou(box,old.box),cost=distance*2.7+(1-overlap)*.3;
     if((overlap>.02||distance<.2)&&cost<bestCost){match=old;bestCost=cost}
    }
@@ -386,8 +417,8 @@ function createLiveSpeakerTracker(video,det){
     (box.mouthY-box.y)/Math.max(1,box.h)-(match.box.mouthY-match.box.y)/Math.max(1,match.box.h)
    )*9):0;
    const activity=(match?.activity||0)*.45+(mouthMotion*.72+movement*.28)*.55;
-   const area=Math.min(1,Math.sqrt((box.w*box.h)/Math.max(1,video.videoWidth*video.videoHeight)/.11));
-   const center=Math.max(0,1-Math.abs(box.cx/video.videoWidth-.5)*1.35);
+   const area=Math.min(1,Math.sqrt((box.w*box.h)/Math.max(1,vw*vh)/.11));
+   const center=Math.max(0,1-Math.abs(box.cx/vw-.5)*1.35);
    const score=mouthMotion*.50+activity*.28+movement*.10+area*.07+center*.025+box.confidence*.025;
    const track={id,box,activity,mouth:mouthMotion,score};used.add(id);visible.push(track)
   }
@@ -423,6 +454,83 @@ async function prepareMobileSource(t){
  await seek(t)
 }
 
+async function exportClipDecoded(i,cb){
+ const c=clips[i],[W,H]=size();
+ canvas.width=W;canvas.height=H;
+ if(!window.VideoEncoder)throw new Error("Smooth MP4 export needs an updated Chrome or Edge browser");
+ suspendPreviews();source.pause();
+ const editVideo=$("editVideo");
+ if(editVideo){try{editVideo.pause();editVideo.removeAttribute("src");editVideo.load()}catch{}}
+
+ cb("Opening video frames directly…");
+ const mediaInput=new Input({formats:ALL_FORMATS,source:new BlobSource(file)});
+ const target=new BufferTarget(),output=new Output({format:new Mp4OutputFormat(),target});
+ const videoOut=new CanvasSource(canvas,{codec:"avc",bitrate:4200000,hardwareAcceleration:"prefer-hardware",keyFrameInterval:2});
+ output.addVideoTrack(videoOut,{frameRate:30});
+ let audioOut=null,started=false,videoClosed=false,audioClosed=false;
+ try{
+  const videoTrack=await mediaInput.getPrimaryVideoTrack();
+  if(!videoTrack)throw new Error("No video track found");
+  const inputAudioTrack=await mediaInput.getPrimaryAudioTrack();
+  if(inputAudioTrack){audioOut=new AudioBufferSource({codec:"aac",bitrate:160000});output.addAudioTrack(audioOut)}
+  const videoSink=new VideoSampleSink(videoTrack,{hardwareAcceleration:"prefer-hardware"});
+  const det=$("layout").value==="auto"?await initDetector():null;
+  await output.start();started=true;
+
+  cb("Rendering directly… 0%");
+  const fps=30,frameDuration=1/fps,total=Math.max(frameDuration,c.end-c.start);
+  let frameNumber=0,nextFrameTime=0,lastDetection=-Infinity,liveTracker=null,liveFace=null,decodedFrames=0;
+  for await(const frameSample of videoSink.samples(c.start,c.end)){
+   try{
+    const t=Math.max(c.start,Math.min(c.end,frameSample.timestamp)),relative=t-c.start;
+    if(det&&t-lastDetection>=.45){
+     if(!liveTracker){
+      speakerSample.width=320;speakerSample.height=Math.max(1,Math.round(320*frameSample.displayHeight/frameSample.displayWidth));
+      liveTracker=createLiveSpeakerTracker(speakerSample,det);
+      liveFace={x:speakerSample.width/2,y:speakerSample.height/2}
+     }
+     speakerCtx.clearRect(0,0,speakerSample.width,speakerSample.height);
+     frameSample.draw(speakerCtx,0,0,speakerSample.width,speakerSample.height);
+     liveFace=liveTracker();lastDetection=t
+    }
+    const face=liveFace?{x:liveFace.x/speakerSample.width*frameSample.displayWidth,y:liveFace.y/speakerSample.height*frameSample.displayHeight}:{x:frameSample.displayWidth/2,y:frameSample.displayHeight/2};
+    ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);
+    if($("layout").value==="fit")drawSampleFit(frameSample);else drawSampleCover(frameSample,face.x,face.y);
+    drawText(c,t);
+    while(nextFrameTime<=relative+frameDuration/2&&nextFrameTime<total){
+     await videoOut.add(nextFrameTime,Math.min(frameDuration,total-nextFrameTime),{keyFrame:frameNumber%(fps*2)===0});
+     frameNumber++;nextFrameTime=frameNumber/fps
+    }
+    decodedFrames++;
+    if(decodedFrames%8===0){cb(`Rendering directly… ${Math.round(Math.max(0,Math.min(1,relative/total))*100)}%`);await sleep(0)}
+   }finally{frameSample.close()}
+  }
+  if(!decodedFrames)throw new Error("The selected clip has no readable video frames");
+  while(nextFrameTime<total){await videoOut.add(nextFrameTime,Math.min(frameDuration,total-nextFrameTime),{keyFrame:frameNumber%(fps*2)===0});frameNumber++;nextFrameTime=frameNumber/fps}
+  videoOut.close();videoClosed=true;
+
+  if(audioOut&&inputAudioTrack){
+   cb("Adding audio…");
+   try{
+    const audioSink=new AudioBufferSink(inputAudioTrack);
+    for await(const {buffer,timestamp} of audioSink.buffers(c.start,c.end)){
+     await audioOut.add(buffer);
+     if(Math.round(timestamp)%5===0)await sleep(0)
+    }
+   }catch(e){console.warn("Mobile audio decode unavailable",e)}
+   audioOut.close();audioClosed=true
+  }
+  cb("Finalizing smooth MP4…");
+  await output.finalize();
+  return{blob:new Blob([target.buffer],{type:"video/mp4"}),ext:"mp4"}
+ }catch(e){
+  if(!videoClosed){try{videoOut.close()}catch{}}
+  if(audioOut&&!audioClosed){try{audioOut.close()}catch{}}
+  if(started)await output.cancel().catch(()=>{});
+  throw e
+ }finally{mediaInput.dispose()}
+}
+
 async function exportClip(i,cb){
  const c=clips[i];
 
@@ -438,6 +546,8 @@ async function exportClip(i,cb){
    cb("Caption download unavailable · continuing export…")
   }
  }
+
+ if(MOBILE)return exportClipDecoded(i,cb);
 
  if(MOBILE){
   suspendPreviews();
