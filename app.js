@@ -39,37 +39,15 @@ async function resetPlaybackSource(t=0){
  suspendPreviews();
  const editVideo=$('editVideo');
  if(editVideo){try{editVideo.pause();editVideo.removeAttribute('src');editVideo.load()}catch{}}
- try{source.pause()}catch{}
- // Keep the original Blob URL alive. Samsung can lose access to very large
- // local files when the URL is revoked and recreated during the same session.
- if(source.getAttribute('src')!==url||source.error||source.readyState<1){
-  source.src=url;source.preload='auto';source.load();
-  try{await meta(source)}
-  catch(e){
-   // Reassign the same still-valid URL once; never revoke the selected file.
-   await sleep(250);source.src=url;source.load();await meta(source)
-  }
- }
- await seek(t,source);
-}
-async function openCompatibilityVideo(t=0){
- suspendPreviews();
- const editVideo=$('editVideo');
- if(editVideo){try{editVideo.pause();editVideo.removeAttribute('src');editVideo.load()}catch{}}
- // Release the analysis element but keep the selected file URL valid.
  try{source.pause();source.removeAttribute('src');source.load()}catch{}
- const playback=document.createElement('video');
- playback.muted=true;playback.playsInline=true;playback.preload='auto';
- playback.setAttribute('playsinline','');playback.setAttribute('webkit-playsinline','');
- playback.style.cssText='position:fixed;left:-10000px;top:0;width:320px;height:180px;opacity:.01;pointer-events:none';
- document.body.appendChild(playback);
- playback.src=url;playback.load();
- try{await meta(playback);await seek(t,playback);return playback}
- catch(e){try{playback.pause();playback.removeAttribute('src');playback.load();playback.remove()}catch{};throw e}
-}
-function closeCompatibilityVideo(playback){
- if(!playback)return;
- try{playback.pause();playback.removeAttribute('src');playback.load();playback.remove()}catch{}
+ await sleep(100);
+ if(url)URL.revokeObjectURL(url);
+ url=URL.createObjectURL(file);sourceUrl=url;
+ document.querySelectorAll('.clipPreview').forEach(v=>{v.dataset.previewSrc=url;try{v.pause();v.removeAttribute('src');v.load()}catch{}});
+ source.src=url;source.load();
+ await meta(source);
+ await seek(t,source);
+ if(source.readyState<2)await wait(source,'loadeddata',30000);
 }
 async function analyzePlaybackCompat(){
  const s=(+$('startSec').value)*60,e=(+$('endSec').value)*60,span=e-s,n=Math.min(48,Math.max(18,Math.ceil(span/120))),det=await initDetector();
@@ -138,12 +116,7 @@ function activatePreview(v){
  if(activePreview){try{activePreview.pause();activePreview.removeAttribute('src');activePreview.load()}catch{}}
  activePreview=v;
  const start=+v.dataset.start||0,end=+v.dataset.end||duration;
- // Android/Samsung can fail on deep #t fragments in a large local Blob.
- // Load the one shared URL and seek after metadata instead.
- v.src=url;v.load();
- const position=()=>{try{v.currentTime=Math.max(0,Math.min(start,(v.duration||duration)-.03))}catch{}};
- if(v.readyState>=1)position();else v.addEventListener('loadedmetadata',position,{once:true});
- v.ontimeupdate=()=>{if(v.currentTime>=end){v.pause();position()}}
+ v.src=`${url}#t=${start},${end}`;v.load()
 }
 function setupMobilePreviews(){
  if(!MOBILE)return;
@@ -645,70 +618,70 @@ async function exportClipRecorder(i,cb){
  if(!window.MediaRecorder||!canvas.captureStream)throw new Error('This Samsung browser cannot record the clip. Update Chrome and retry.');
 
  cb('Samsung compatibility · opening video…');
- const playback=await openCompatibilityVideo(c.start);
+ await resetPlaybackSource(c.start);
+ source.muted=true;source.playsInline=true;
  try{
-  await playback.play();
+  await source.play();
   await sleep(100);
-  playback.pause();
-  await seek(c.start,playback)
- }catch(e){closeCompatibilityVideo(playback);throw new Error('Samsung could not start this video. Close other video tabs, select it again, and retry.')}
+  source.pause();
+  await seek(c.start,source)
+ }catch(e){throw new Error('Samsung could not start this video. Close other video tabs, select it again, and retry.')}
 
  const chosenMime=mime();
- if(!chosenMime){closeCompatibilityVideo(playback);throw new Error('This Samsung browser has no supported video recorder. Update Chrome and retry.')}
+ if(!chosenMime)throw new Error('This Samsung browser has no supported video recorder. Update Chrome and retry.');
  const outputStream=canvas.captureStream(30);
  let playbackStream=null;
  try{
-  const capture=playback.captureStream||playback.mozCaptureStream;
-  if(capture){playbackStream=capture.call(playback);for(const track of playbackStream.getAudioTracks())outputStream.addTrack(track)}
+  const capture=source.captureStream||source.mozCaptureStream;
+  if(capture){playbackStream=capture.call(source);for(const track of playbackStream.getAudioTracks())outputStream.addTrack(track)}
  }catch(e){console.warn('Samsung audio capture unavailable; exporting video only',e)}
 
  let recorder;
  try{recorder=new MediaRecorder(outputStream,{mimeType:chosenMime,videoBitsPerSecond:3500000,audioBitsPerSecond:128000})}
  catch(e){
   try{recorder=new MediaRecorder(outputStream,{mimeType:chosenMime})}
-  catch{for(const track of outputStream.getTracks())try{track.stop()}catch{};closeCompatibilityVideo(playback);throw new Error('Samsung could not start the compatibility recorder. Update Chrome and retry.')}
+  catch{throw new Error('Samsung could not start the compatibility recorder. Update Chrome and retry.')}
  }
 
  const chunks=[];
  recorder.ondataavailable=e=>{if(e.data?.size)chunks.push(e.data)};
  const det=$('layout').value==='auto'?await initDetector():null;
- const liveTracker=det?createLiveSpeakerTracker(playback,det):null;
- let liveFace={x:playback.videoWidth/2,y:playback.videoHeight/2},lastDetection=-Infinity;
+ const liveTracker=det?createLiveSpeakerTracker(source,det):null;
+ let liveFace={x:source.videoWidth/2,y:source.videoHeight/2},lastDetection=-Infinity;
  const total=Math.max(.2,c.end-c.start);
 
  cb('Samsung compatibility · rendering 0%');
  recorder.start(1000);
- try{await playback.play()}
- catch(e){try{recorder.stop()}catch{};for(const track of outputStream.getTracks())try{track.stop()}catch{};closeCompatibilityVideo(playback);throw new Error('Samsung could not play the selected clip. Select the original video again and retry.')}
+ try{await source.play()}
+ catch(e){try{recorder.stop()}catch{};throw new Error('Samsung could not play the selected clip. Select the original video again and retry.')}
 
- let lastTime=playback.currentTime,lastAdvance=performance.now(),lastShown=-1,recordingError=null;
- try{await new Promise((resolve,reject)=>{
-  recorder.onerror=e=>{recordingError=e?.error||new Error('Samsung recording failed');try{playback.pause()}catch{};try{if(recorder.state!=='inactive')recorder.stop()}catch{};reject(recordingError)};
+ let lastTime=source.currentTime,lastAdvance=performance.now(),lastShown=-1,recordingError=null;
+ await new Promise((resolve,reject)=>{
+  recorder.onerror=e=>{recordingError=e?.error||new Error('Samsung recording failed');try{source.pause()}catch{};try{if(recorder.state!=='inactive')recorder.stop()}catch{};reject(recordingError)};
   recorder.onstop=()=>recordingError?reject(recordingError):resolve();
-  const stop=()=>{try{playback.pause()}catch{};try{if(recorder.state!=='inactive'){recorder.requestData();recorder.stop()}}catch(e){reject(e)}};
+  const stop=()=>{try{source.pause()}catch{};try{if(recorder.state!=='inactive'){recorder.requestData();recorder.stop()}}catch(e){reject(e)}};
   const tick=()=>{
    if(recorder.state==='inactive')return;
    try{
-    const t=Math.max(c.start,Math.min(c.end,playback.currentTime));
+    const t=Math.max(c.start,Math.min(c.end,source.currentTime));
     if(t>lastTime+.002){lastTime=t;lastAdvance=performance.now()}
     else if(performance.now()-lastAdvance>12000)throw new Error('Samsung stopped reading the video during export. Keep the page open and retry.');
     if(liveTracker&&t-lastDetection>=.45){liveFace=liveTracker();lastDetection=t}
-    const face=liveTracker?liveFace:{x:playback.videoWidth/2,y:playback.videoHeight/2};
+    const face=liveTracker?liveFace:{x:source.videoWidth/2,y:source.videoHeight/2};
     ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);
-    if($('layout').value==='fit')drawFit(playback);else drawCover(playback,face.x,face.y);
+    if($('layout').value==='fit')drawFit(source);else drawCover(source,face.x,face.y);
     drawText(c,t);
     const pct=Math.round(Math.max(0,Math.min(1,(t-c.start)/total))*100);
     if(pct!==lastShown&&pct%2===0){lastShown=pct;cb(`Samsung compatibility · rendering ${pct}%`)}
-    if(t>=c.end-.02||playback.ended){stop();return}
+    if(t>=c.end-.02||source.ended){stop();return}
     requestAnimationFrame(tick)
    }catch(e){recordingError=e;stop()}
   };
   requestAnimationFrame(tick)
- })}finally{
-  for(const track of outputStream.getTracks())try{track.stop()}catch{}
-  if(playbackStream)for(const track of playbackStream.getTracks())try{track.stop()}catch{}
-  closeCompatibilityVideo(playback)
- }
+ });
+
+ for(const track of outputStream.getTracks())try{track.stop()}catch{}
+ if(playbackStream)for(const track of playbackStream.getTracks())try{track.stop()}catch{}
  if(recordingError)throw recordingError;
  if(!chunks.length)throw new Error('Samsung created an empty clip. Keep this page open and retry.');
  cb('Finalizing Samsung-compatible video…');
