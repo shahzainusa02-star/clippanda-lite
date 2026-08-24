@@ -1,12 +1,8 @@
-import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,VideoSampleSink,Output,Mp4OutputFormat,BufferTarget,CanvasSource,AudioBufferSource} from "https://cdn.jsdelivr.net/npm/mediabunny@1.42.0/+esm";
+import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,Output,Mp4OutputFormat,BufferTarget,CanvasSource,AudioBufferSource} from "https://cdn.jsdelivr.net/npm/mediabunny@1.42.0/+esm";
 const $=id=>document.getElementById(id),source=$("source"),sample=$("sample"),sctx=sample.getContext("2d",{willReadFrequently:true}),canvas=$("renderCanvas"),ctx=canvas.getContext("2d");
 const speakerSample=document.createElement("canvas"),speakerCtx=speakerSample.getContext("2d",{willReadFrequently:true});
 speakerSample.width=320;speakerSample.height=180;
-const MOBILE=/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)||navigator.maxTouchPoints>1||matchMedia("(pointer:coarse)").matches;
-const SAMSUNG=/SamsungBrowser|SAMSUNG|SM-[A-Z0-9-]+/i.test(navigator.userAgent);
-source.muted=true;source.playsInline=true;source.setAttribute("playsinline","");source.setAttribute("webkit-playsinline","");
-let file=null,url=null,sourceUrl=null,duration=0,features=[],clips=[],editIndex=-1,detector=null,detectorTried=false,transcriber=null,loadingTranscriber=null,lastFace={x:0,y:0};
-let previewObserver=null,activePreview=null;
+let file=null,url=null,duration=0,features=[],clips=[],editIndex=-1,detector=null,detectorTried=false,transcriber=null,loadingTranscriber=null,lastFace={x:0,y:0};
 const faceToggle=$("faceTracking")?.closest(".toggle");
 if(faceToggle){
  const title=faceToggle.querySelector("b"),note=faceToggle.querySelector(".small");
@@ -15,131 +11,17 @@ if(faceToggle){
 }
 if($("layout")?.options?.[0])$("layout").options[0].textContent="Auto Reframe · active speaker";
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-function wait(el,name,timeout=MOBILE?20000:7000){return new Promise((res,rej)=>{let done=false;const end=(err)=>{if(done)return;done=true;clearTimeout(t);el.removeEventListener(name,ok);el.removeEventListener("error",bad);err?rej(err):res()},ok=()=>end(),bad=()=>end(new Error("Video could not be read")),t=setTimeout(()=>end(new Error("Timed out")),timeout);el.addEventListener(name,ok,{once:true});el.addEventListener("error",bad,{once:true})})}
+function wait(el,name,timeout=7000){return new Promise((res,rej)=>{let done=false;const end=(err)=>{if(done)return;done=true;clearTimeout(t);el.removeEventListener(name,ok);el.removeEventListener("error",bad);err?rej(err):res()},ok=()=>end(),bad=()=>end(new Error("Video could not be read")),t=setTimeout(()=>end(new Error("Timed out")),timeout);el.addEventListener(name,ok,{once:true});el.addEventListener("error",bad,{once:true})})}
 async function meta(el=source){if(el.readyState>=1&&Number.isFinite(el.duration))return;await wait(el,"loadedmetadata")};async function seek(t,el=source){return new Promise(r=>{let x=false;const done=()=>{if(x)return;x=true;el.removeEventListener("seeked",done);r()};el.addEventListener("seeked",done,{once:true});el.currentTime=Math.max(0,Math.min(t,(el.duration||duration)-.03));setTimeout(done,1200)})};function fmt(t){t=Math.max(0,+t||0);return `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,"0")}`}
-$("file").onchange=async()=>{file=$("file").files?.[0]||null;clips=[];$("resultsCard").classList.add("hidden");if(sourceUrl&&sourceUrl!==url)URL.revokeObjectURL(sourceUrl);if(url)URL.revokeObjectURL(url);url=null;sourceUrl=null;if(!file)return;url=URL.createObjectURL(file);sourceUrl=url;source.src=sourceUrl;$("fileInfo").textContent=`${file.name} · reading…`;try{await meta();duration=source.duration;$("fileInfo").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB · ${fmt(duration)}`;$("startSec").value="0.00";$("endSec").value=(duration/60).toFixed(2);$("startSec").max=(duration/60).toFixed(2);$("endSec").max=(duration/60).toFixed(2);$("rangeBox").classList.remove("hidden");$("settings").classList.remove("hidden");syncRange()}catch(e){$("fileInfo").textContent=e.message}};
+$("file").onchange=async()=>{file=$("file").files?.[0]||null;clips=[];$("resultsCard").classList.add("hidden");if(url)URL.revokeObjectURL(url);if(!file)return;url=URL.createObjectURL(file);source.src=url;$("fileInfo").textContent=`${file.name} · reading…`;try{await meta();duration=source.duration;$("fileInfo").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB · ${fmt(duration)}`;$("startSec").value="0.00";$("endSec").value=(duration/60).toFixed(2);$("startSec").max=(duration/60).toFixed(2);$("endSec").max=(duration/60).toFixed(2);$("rangeBox").classList.remove("hidden");$("settings").classList.remove("hidden");syncRange()}catch(e){$("fileInfo").textContent=e.message}};
 function syncRange(){let s=Math.max(0,(+$("startSec").value||0)*60),e=Math.min(duration,(+$("endSec").value||duration/60)*60);if(e<s+.5)e=Math.min(duration,s+.5);if(s>e-.5)s=Math.max(0,e-.5);$("startSec").value=(s/60).toFixed(2);$("endSec").value=(e/60).toFixed(2);$("startRange").value=duration?s/duration*100:0;$("endRange").value=duration?e/duration*100:100;$("rangeText").textContent=`Analyze ${fmt(s)} – ${fmt(e)} (${fmt(e-s)})`};$("startRange").oninput=()=>{$("startSec").value=(duration*+$("startRange").value/100/60).toFixed(2);syncRange()};$("endRange").oninput=()=>{$("endSec").value=(duration*+$("endRange").value/100/60).toFixed(2);syncRange()};$("startSec").onchange=syncRange;$("endSec").onchange=syncRange;
 async function initDetector(){if(!$("faceTracking").checked)return null;if(detector)return detector;if(detectorTried)return null;detectorTried=true;try{const {FilesetResolver,FaceDetector}=await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/+esm");const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");detector=await FaceDetector.createFromOptions(vision,{baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",delegate:"CPU"},runningMode:"IMAGE",minDetectionConfidence:.38,minSuppressionThreshold:.25});return detector}catch(e){console.warn(e);return null}}
-function statsPixels(prev){const d=sctx.getImageData(0,0,200,112).data,g=new Uint8Array(22400);let motion=0,edge=0,lum=0;for(let i=0,p=0;i<d.length;i+=4,p++){const v=(d[i]*77+d[i+1]*150+d[i+2]*29)>>8;g[p]=v;lum+=v}if(prev)for(let i=0;i<g.length;i+=3)motion+=Math.abs(g[i]-prev[i]);for(let y=1;y<111;y+=2)for(let x=1;x<199;x+=2){const p=y*200+x;edge+=Math.abs(g[p]-g[p-1])+Math.abs(g[p]-g[p-200])}return {g,motion:prev?motion/(Math.ceil(g.length/3)*255):0,edge:edge/(100*56*2*255),lum:lum/g.length/255}}
-function stats(prev){sctx.drawImage(source,0,0,200,112);return statsPixels(prev)}
-function compatibilityFeatures(){
- const s=(+$('startSec').value)*60,e=(+$('endSec').value)*60,span=Math.max(.2,e-s);
- const n=Math.min(90,Math.max(24,Math.ceil(span/60)));
- const instructionSeed=Array.from($('instructions').value||'clipnova').reduce((a,ch)=>(a*31+ch.charCodeAt(0))>>>0,2166136261);
- features=Array.from({length:n},(_,i)=>{
-  const t=s+(span-.05)*(i/Math.max(1,n-1));
-  const wave=Math.sin(i*1.73+instructionSeed%19)*.12+Math.sin(i*.47+instructionSeed%7)*.08;
-  const hook=i%Math.max(3,Math.round(n/8))===0?.16:0;
-  return{t,score:.34+wave+hook,face:0}
- });
- $('bar').style.width='83%';
- $('status').textContent='Samsung compatibility scan complete.'
-}
-async function resetPlaybackSource(t=0){
- suspendPreviews();
- const editVideo=$('editVideo');
- if(editVideo){try{editVideo.pause();editVideo.removeAttribute('src');editVideo.load()}catch{}}
- try{source.pause();source.removeAttribute('src');source.load()}catch{}
- await sleep(100);
- if(url)URL.revokeObjectURL(url);
- url=URL.createObjectURL(file);sourceUrl=url;
- document.querySelectorAll('.clipPreview').forEach(v=>{v.dataset.previewSrc=url;try{v.pause();v.removeAttribute('src');v.load()}catch{}});
- source.src=url;source.load();
- await meta(source);
- await seek(t,source);
- if(source.readyState<2)await wait(source,'loadeddata',30000);
-}
-async function analyzePlaybackCompat(){
- const s=(+$('startSec').value)*60,e=(+$('endSec').value)*60,span=e-s,n=Math.min(48,Math.max(18,Math.ceil(span/120))),det=await initDetector();
- $('status').textContent='Samsung compatibility scan…';
- try{
-  await resetPlaybackSource(s);
-  features=[];let prev=null;
-  for(let i=0;i<n;i++){
-   const t=s+(span-.05)*(i/Math.max(1,n-1));
-   await seek(t,source);
-   if(source.error)throw new Error('Samsung playback decoder unavailable');
-   const f=stats(prev);prev=f.g;
-   let face=0;
-   if(det&&i%2===0){try{const r=det.detect(source);if(r?.detections?.length){const b=r.detections.reduce((a,b)=>b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a);face=Math.min(1,(b.boundingBox.width*b.boundingBox.height)/(source.videoWidth*source.videoHeight)*8+.3)}}catch{}}
-   const scene=Math.min(1,f.motion*2.4),score=f.motion*.4+scene*.25+f.edge*.2+face*.12+Math.min(1,Math.abs(f.lum-.5)+.2)*.03;
-   features.push({t,score,face});
-   $('bar').style.width=`${Math.round(5+78*(i+1)/n)}%`;$('status').textContent=`Samsung compatibility scan ${i+1}/${n}…`;
-   if(i%3===0)await sleep(0)
-  }
- }catch(e){
-  console.warn('Samsung frame scan unavailable; using safe timeline selection',e);
-  compatibilityFeatures()
- }
-}
-async function analyzeDecoded(){
- if(SAMSUNG)return analyzePlaybackCompat();
- const s=(+$("startSec").value)*60,e=(+$("endSec").value)*60,span=e-s,n=Math.min(60,Math.max(24,Math.ceil(span/90))),det=await initDetector();
- const input=new Input({formats:ALL_FORMATS,source:new BlobSource(file)});
- features=[];let prev=null,i=0;
- try{
-  const track=await input.getPrimaryVideoTrack();
-  if(!track)throw new Error("No video track found");
-  const sink=new VideoSampleSink(track,{hardwareAcceleration:"prefer-hardware"});
-  const timestamps=Array.from({length:n},(_,k)=>s+(span-.05)*(k/(n-1)));
-  for await(const frameSample of sink.samplesAtTimestamps(timestamps)){
-   const t=timestamps[i];
-   if(!frameSample){features.push({t,score:0,face:0});i++;continue}
-   try{
-    frameSample.draw(sctx,0,0,200,112);
-    const f=statsPixels(prev);prev=f.g;
-    let face=0;
-    if(det&&i%2===0){try{const r=det.detect(sample);if(r?.detections?.length){const b=r.detections.reduce((a,b)=>b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a);face=Math.min(1,(b.boundingBox.width*b.boundingBox.height)/(200*112)*8+.3)}}catch{}}
-    const scene=Math.min(1,f.motion*2.4),score=f.motion*.4+scene*.25+f.edge*.2+face*.12+Math.min(1,Math.abs(f.lum-.5)+.2)*.03;
-    features.push({t,score,face})
-   }finally{frameSample.close()}
-   i++;$("bar").style.width=`${Math.round(5+78*i/n)}%`;$("status").textContent=`Analyzing ${i}/${n} frames…`;
-   if(i%4===0)await sleep(0)
-  }
- }catch(e){
-  console.warn('Direct mobile decoder unavailable; using compatibility scan',e);
-  return analyzePlaybackCompat()
- }finally{input.dispose()}
-}
-async function analyze(){if(MOBILE)return analyzeDecoded();const s=(+$("startSec").value)*60,e=(+$("endSec").value)*60,span=e-s,n=Math.min(260,Math.max(24,Math.ceil(span))),det=await initDetector();features=[];let prev=null;for(let i=0;i<n;i++){const t=s+(span-.05)*(i/(n-1));await seek(t);const f=stats(prev);prev=f.g;let face=0;if(det&&i%2===0){try{const r=det.detect(source);if(r?.detections?.length){const b=r.detections.reduce((a,b)=>b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a);face=Math.min(1,(b.boundingBox.width*b.boundingBox.height)/(source.videoWidth*source.videoHeight)*8+.3)}}catch{}}const scene=Math.min(1,f.motion*2.4),score=f.motion*.4+scene*.25+f.edge*.2+face*.12+Math.min(1,Math.abs(f.lum-.5)+.2)*.03;features.push({t,score,face});if(i%3===0){$("bar").style.width=`${Math.round(5+78*(i+1)/n)}%`;$("status").textContent=`Analyzing ${i+1}/${n} frames…`}if(i%6===0)await sleep(0)}}
+function stats(prev){sctx.drawImage(source,0,0,200,112);const d=sctx.getImageData(0,0,200,112).data,g=new Uint8Array(22400);let motion=0,edge=0,lum=0;for(let i=0,p=0;i<d.length;i+=4,p++){const v=(d[i]*77+d[i+1]*150+d[i+2]*29)>>8;g[p]=v;lum+=v}if(prev)for(let i=0;i<g.length;i+=3)motion+=Math.abs(g[i]-prev[i]);for(let y=1;y<111;y+=2)for(let x=1;x<199;x+=2){const p=y*200+x;edge+=Math.abs(g[p]-g[p-1])+Math.abs(g[p]-g[p-200])}return {g,motion:prev?motion/(Math.ceil(g.length/3)*255):0,edge:edge/(100*56*2*255),lum:lum/g.length/255}}
+async function analyze(){const s=(+$("startSec").value)*60,e=(+$("endSec").value)*60,span=e-s,n=Math.min(260,Math.max(24,Math.ceil(span))),det=await initDetector();features=[];let prev=null;for(let i=0;i<n;i++){const t=s+(span-.05)*(i/(n-1));await seek(t);const f=stats(prev);prev=f.g;let face=0;if(det&&i%2===0){try{const r=det.detect(source);if(r?.detections?.length){const b=r.detections.reduce((a,b)=>b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a);face=Math.min(1,(b.boundingBox.width*b.boundingBox.height)/(source.videoWidth*source.videoHeight)*8+.3)}}catch{}}const scene=Math.min(1,f.motion*2.4),score=f.motion*.4+scene*.25+f.edge*.2+face*.12+Math.min(1,Math.abs(f.lum-.5)+.2)*.03;features.push({t,score,face});if(i%3===0){$("bar").style.width=`${Math.round(5+78*(i+1)/n)}%`;$("status").textContent=`Analyzing ${i+1}/${n} frames…`}if(i%6===0)await sleep(0)}}
 function choose(){const rs=(+$("startSec").value)*60,re=(+$("endSec").value)*60,len=+$("clipLength").value,count=+$("clipCount").value;if(re-rs<=len)return[{start:rs,end:re,score:90,words:null,transcript:""}];const wins=[],step=Math.max(2,len/6);for(let st=rs;st<=re-len+.001;st+=step){const en=st+len,a=features.filter(x=>x.t>=st&&x.t<en);if(!a.length)continue;const vals=a.map(x=>x.score),avg=vals.reduce((x,y)=>x+y,0)/vals.length,peak=Math.max(...vals),early=a.filter(x=>x.t<st+len/3),hook=early.length?Math.max(...early.map(x=>x.score)):0,faces=a.reduce((x,y)=>x+y.face,0)/a.length;wins.push({start:st,end:en,raw:avg*.48+peak*.31+hook*.15+faces*.06,words:null,transcript:""})}wins.sort((a,b)=>b.raw-a.raw);const out=[];for(const w of wins){if(out.some(c=>Math.max(0,Math.min(c.end,w.end)-Math.max(c.start,w.start))>len*.32))continue;out.push(w);if(out.length>=count)break}for(const w of wins){if(out.length>=count)break;if(!out.includes(w))out.push(w)}const lo=Math.min(...out.map(x=>x.raw)),hi=Math.max(...out.map(x=>x.raw)),sp=Math.max(.0001,hi-lo);out.forEach(x=>x.score=Math.round(70+29*(x.raw-lo)/sp));return out.sort((a,b)=>a.start-b.start)}
 $("generate").onclick=async()=>{if(!file)return;$("generate").disabled=true;$("status").className="small";$("status").textContent="Starting…";$("bar").style.width="2%";try{await analyze();clips=choose();renderCards();$("bar").style.width="100%";$("status").textContent=`Generated ${clips.length} clips.`;$("resultsCard").classList.remove("hidden");$("resultsCard").scrollIntoView({behavior:"smooth"})}catch(e){$("status").className="small error";$("status").textContent=e.message||e}finally{$("generate").disabled=false}};
-function pausePreviews(){document.querySelectorAll(".clipPreview").forEach(v=>{try{v.pause()}catch{}})}
-function suspendPreviews(){
- if(!MOBILE)return;
- if(previewObserver){previewObserver.disconnect();previewObserver=null}
- activePreview=null;
- document.querySelectorAll(".clipPreview").forEach(v=>{try{v.pause();v.removeAttribute("src");v.load()}catch{}})
-}
-function activatePreview(v){
- if(!v||activePreview===v)return;
- if(activePreview){try{activePreview.pause();activePreview.removeAttribute('src');activePreview.load()}catch{}}
- activePreview=v;
- const start=+v.dataset.start||0,end=+v.dataset.end||duration;
- v.src=`${url}#t=${start},${end}`;v.load()
-}
-function setupMobilePreviews(){
- if(!MOBILE)return;
- if(previewObserver)previewObserver.disconnect();
- const videos=[...document.querySelectorAll('.clipPreview')];
- if(!videos.length)return;
- if(!('IntersectionObserver' in window)){activatePreview(videos[0]);return}
- previewObserver=new IntersectionObserver(entries=>{
-  const visible=entries.filter(x=>x.isIntersecting).sort((a,b)=>b.intersectionRatio-a.intersectionRatio);
-  if(visible[0])activatePreview(visible[0].target)
- },{rootMargin:'120px 0px',threshold:[.05,.35,.7]});
- videos.forEach(v=>previewObserver.observe(v))
-}
-function restorePreviews(){
- if(!MOBILE)return;
- requestAnimationFrame(setupMobilePreviews)
-}
-function renderCards(){
- if(previewObserver){previewObserver.disconnect();previewObserver=null}activePreview=null;
- $("results").innerHTML=clips.map((c,i)=>`<article class="clip"><div class="row"><div><b>Clip ${i+1}</b><div class="small">${fmt(c.start)} – ${fmt(c.end)} · ${(c.end-c.start).toFixed(1)}s</div></div><div class="score">${c.score}/100</div></div><video class="clipPreview" controls playsinline webkit-playsinline preload="metadata" data-start="${c.start}" data-end="${c.end}" ${MOBILE?'':`src="${url}#t=${c.start},${c.end}"`}></video><div style="margin-top:7px"><span class="badge">${esc($("aspect").selectedOptions[0].text)}</span><span class="badge">${esc($("layout").selectedOptions[0].text)}</span>${c.words?.length?'<span class="badge">Captions ✓</span>':''}</div><div class="row" style="margin-top:10px"><button class="secondary" onclick="window.openEdit(${i})">Edit clip</button><button class="green" onclick="window.quickExport(${i},this)">Create & Download</button></div><div id="cardStatus${i}" class="small"></div></article>`).join("");
- if(MOBILE)requestAnimationFrame(setupMobilePreviews)
-}
-window.openEdit=async i=>{if(MOBILE)suspendPreviews();else pausePreviews();editIndex=i;const c=clips[i];$("editTitle").textContent=`Edit Clip ${i+1}`;$("editStart").value=(c.start/60).toFixed(2);$("editEnd").value=(c.end/60).toFixed(2);$("transcript").textContent=c.transcript||"Captions not prepared yet.";$("exportStatus").className="small";$("exportStatus").textContent="Ready to export.";$("exportBar").style.width="0%";const v=$("editVideo");v.src=url;await meta(v).catch(()=>{});v.currentTime=c.start;$("modal").classList.remove("hidden")};$("close").onclick=()=>{const v=$("editVideo");v.pause();if(MOBILE){v.removeAttribute("src");v.load()}$("modal").classList.add("hidden");restorePreviews()};$("applyTrim").onclick=()=>{if(editIndex<0)return;const c=clips[editIndex],s=(+$("editStart").value)*60,e=(+$("editEnd").value)*60;c.start=Math.max(0,Math.min(duration-.2,s));c.end=Math.max(c.start+.2,Math.min(duration,e));$("editStart").value=(c.start/60).toFixed(2);$("editEnd").value=(c.end/60).toFixed(2);c.words=null;c.transcript="";c.captionSkipped=false;$("transcript").textContent="Trim changed. Prepare captions again if needed.";renderCards()};
+function renderCards(){$("results").innerHTML=clips.map((c,i)=>`<article class="clip"><div class="row"><div><b>Clip ${i+1}</b><div class="small">${fmt(c.start)} – ${fmt(c.end)} · ${(c.end-c.start).toFixed(1)}s</div></div><div class="score">${c.score}/100</div></div><video controls playsinline preload="metadata" src="${url}#t=${c.start},${c.end}"></video><div style="margin-top:7px"><span class="badge">${esc($("aspect").selectedOptions[0].text)}</span><span class="badge">${esc($("layout").selectedOptions[0].text)}</span>${c.words?'<span class="badge">Captions ✓</span>':''}</div><div class="row" style="margin-top:10px"><button class="secondary" onclick="window.openEdit(${i})">Edit clip</button><button class="green" onclick="window.quickExport(${i},this)">Create & Download</button></div><div id="cardStatus${i}" class="small"></div></article>`).join("")}
+window.openEdit=async i=>{editIndex=i;const c=clips[i];$("editTitle").textContent=`Edit Clip ${i+1}`;$("editStart").value=(c.start/60).toFixed(2);$("editEnd").value=(c.end/60).toFixed(2);$("transcript").textContent=c.transcript||"Captions not prepared yet.";$("exportStatus").className="small";$("exportStatus").textContent="Ready to export.";$("exportBar").style.width="0%";const v=$("editVideo");v.src=url;await meta(v).catch(()=>{});v.currentTime=c.start;$("modal").classList.remove("hidden")};$("close").onclick=()=>{$("editVideo").pause();$("modal").classList.add("hidden")};$("applyTrim").onclick=()=>{if(editIndex<0)return;const c=clips[editIndex],s=(+$("editStart").value)*60,e=(+$("editEnd").value)*60;c.start=Math.max(0,Math.min(duration-.2,s));c.end=Math.max(c.start+.2,Math.min(duration,e));$("editStart").value=(c.start/60).toFixed(2);$("editEnd").value=(c.end/60).toFixed(2);c.words=null;c.transcript="";$("transcript").textContent="Trim changed. Prepare captions again if needed.";renderCards()};
 async function audio16k(start,end,cb){const input=new Input({formats:ALL_FORMATS,source:new BlobSource(file)});try{const track=await input.getPrimaryAudioTrack();if(!track)throw new Error("No audio track found");const sink=new AudioBufferSink(track),parts=[];let total=0,sr=0;for await(const {buffer,timestamp} of sink.buffers(start,end)){sr=buffer.sampleRate;const mono=new Float32Array(buffer.length);for(let ch=0;ch<buffer.numberOfChannels;ch++){const d=buffer.getChannelData(ch);for(let i=0;i<mono.length;i++)mono[i]+=d[i]/buffer.numberOfChannels}parts.push(mono);total+=mono.length;cb(`Extracting audio… ${Math.round(Math.max(0,Math.min(1,(timestamp-start)/(end-start)))*100)}%`)}if(!total)throw new Error("Audio could not be decoded");const all=new Float32Array(total);let o=0;for(const p of parts){all.set(p,o);o+=p.length}if(sr===16000)return all;const ratio=sr/16000,n=Math.floor(all.length/ratio),out=new Float32Array(n);for(let i=0;i<n;i++){const x=i*ratio,j=Math.floor(x),f=x-j;out[i]=(all[j]||0)*(1-f)+(all[Math.min(all.length-1,j+1)]||0)*f}return out}finally{input.dispose()}}
 async function getWhisper(cb){
  if(transcriber)return transcriber;
@@ -149,7 +31,6 @@ async function getWhisper(cb){
   const {env,pipeline}=await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/+esm");
   env.allowLocalModels=false;
   try{env.useBrowserCache=true}catch{}
-  if(MOBILE){try{env.backends.onnx.wasm.numThreads=1}catch{}}
   let last=-1;
   const progress_callback=p=>{
    try{
@@ -163,19 +44,11 @@ async function getWhisper(cb){
   };
   const model="onnx-community/whisper-tiny";
   const cpuOpts={dtype:"q4",progress_callback};
-  if("gpu" in navigator&&!MOBILE){
+  if("gpu" in navigator){
    try{return await pipeline("automatic-speech-recognition",model,{dtype:"q4",device:"webgpu",progress_callback})}
    catch(e){console.warn("WebGPU Whisper failed; using browser CPU",e)}
   }
-  try{return await pipeline("automatic-speech-recognition",model,cpuOpts)}
-  catch(e){
-   if(!MOBILE)throw e;
-   console.warn("Mobile Whisper download failed; retrying without browser cache",e);
-   cb("Mobile browser: retrying AI caption download…");
-   try{env.useBrowserCache=false}catch{}
-   await sleep(800);
-   return await pipeline("automatic-speech-recognition",model,cpuOpts)
-  }
+  return await pipeline("automatic-speech-recognition",model,cpuOpts);
  })();
  try{transcriber=await loadingTranscriber;cb("Whisper AI model ready.");return transcriber}
  finally{loadingTranscriber=null}
@@ -252,8 +125,6 @@ function overlay(){
 }
 $("editVideo").addEventListener("timeupdate",overlay);
 function size(){const a=$("aspect").value;return a==="landscape"?[1280,720]:a==="square"?[1080,1080]:[720,1280]};function drawCover(v,cx,cy){const W=canvas.width,H=canvas.height,sw=v.videoWidth,sh=v.videoHeight,tar=W/H,src=sw/sh;let sx=0,sy=0,cw=sw,ch=sh;if(src>tar){cw=sh*tar;sx=Math.max(0,Math.min(sw-cw,cx-cw/2))}else{ch=sw/tar;sy=Math.max(0,Math.min(sh-ch,cy-ch/2))}ctx.drawImage(v,sx,sy,cw,ch,0,0,W,H)}function drawFit(v){const W=canvas.width,H=canvas.height,sw=v.videoWidth,sh=v.videoHeight;ctx.save();ctx.filter="blur(28px) brightness(.62)";let s=Math.max(W/sw,H/sh);ctx.drawImage(v,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s);ctx.restore();s=Math.min(W/sw,H/sh);ctx.drawImage(v,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s)}
-function drawSampleCover(frameSample,cx,cy){const W=canvas.width,H=canvas.height,sw=frameSample.displayWidth,sh=frameSample.displayHeight,tar=W/H,src=sw/sh;let sx=0,sy=0,cw=sw,ch=sh;if(src>tar){cw=sh*tar;sx=Math.max(0,Math.min(sw-cw,cx-cw/2))}else{ch=sw/tar;sy=Math.max(0,Math.min(sh-ch,cy-ch/2))}frameSample.draw(ctx,sx,sy,cw,ch,0,0,W,H)}
-function drawSampleFit(frameSample){const W=canvas.width,H=canvas.height,sw=frameSample.displayWidth,sh=frameSample.displayHeight;ctx.save();ctx.filter="blur(28px) brightness(.62)";let s=Math.max(W/sw,H/sh);frameSample.draw(ctx,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s);ctx.restore();s=Math.min(W/sw,H/sh);frameSample.draw(ctx,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s)}
 function drawText(c,t){
  if(!$("captions").checked||!c.words?.length)return;
  let k=c.words.findIndex(w=>t>=w.start&&t<=w.end);
@@ -316,16 +187,14 @@ function drawText(c,t){
 }
 function mime(){return ["video/mp4;codecs=avc1.42E01E,mp4a.40.2","video/mp4","video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm"].find(t=>window.MediaRecorder&&MediaRecorder.isTypeSupported(t))||""}
 
-const mediaWidth=media=>media.videoWidth||media.width||1,mediaHeight=media=>media.videoHeight||media.height||1;
-function normalizedFaceBox(d,video=source){
+function normalizedFaceBox(d){
  const b=d?.boundingBox;
  if(!b)return null;
- const vw=mediaWidth(video),vh=mediaHeight(video);
  const x=Math.max(0,b.originX),y=Math.max(0,b.originY);
- const w=Math.max(1,Math.min(vw-x,b.width));
- const h=Math.max(1,Math.min(vh-y,b.height));
+ const w=Math.max(1,Math.min(source.videoWidth-x,b.width));
+ const h=Math.max(1,Math.min(source.videoHeight-y,b.height));
  const mouth=d.keypoints?.[3];
- return{x,y,w,h,cx:x+w/2,cy:y+h/2,mouthX:mouth?mouth.x*vw:x+w/2,mouthY:mouth?mouth.y*vh:y+h*.74,confidence:d.categories?.[0]?.score??.5}
+ return{x,y,w,h,cx:x+w/2,cy:y+h/2,mouthX:mouth?mouth.x*source.videoWidth:x+w/2,mouthY:mouth?mouth.y*source.videoHeight:y+h*.74,confidence:d.categories?.[0]?.score??.5}
 }
 
 function boxIou(a,b){
@@ -371,7 +240,7 @@ async function buildFacePath(c,det,cb){
  const sampleCount=Math.min(300,Math.max(18,Math.ceil(span/.35)));
  const step=span/Math.max(1,sampleCount-1);
  const points=[],tracks=new Map();
- let previousVisible=[],nextTrackId=1,activeId=null,challengerId=null,challengerFrames=0,smooth=null,pixelSampling=!MOBILE;
+ let previousVisible=[],nextTrackId=1,activeId=null,challengerId=null,challengerFrames=0,smooth=null;
 
  for(let n=0;n<sampleCount;n++){
   const t=Math.min(c.end-.03,c.start+n*step);
@@ -379,20 +248,9 @@ async function buildFacePath(c,det,cb){
   let detections=[];
   try{detections=det.detect(source)?.detections||[]}catch{}
 
-  let frame=null;
-  if(pixelSampling){
-   try{
-    speakerCtx.clearRect(0,0,speakerSample.width,speakerSample.height);
-    speakerCtx.drawImage(source,0,0,speakerSample.width,speakerSample.height);
-    frame=speakerCtx.getImageData(0,0,speakerSample.width,speakerSample.height)
-   }catch(e){
-    // Some Samsung Chrome versions incorrectly mark a local video canvas as
-    // cross-origin after repeated seeks. Continue with landmark motion instead.
-    console.warn("Pixel speaker sampling unavailable; using face landmarks",e);
-    pixelSampling=false;speakerSample.width=320;speakerSample.height=180
-   }
-  }
-  const faces=detections.map(d=>normalizedFaceBox(d,source)).filter(Boolean).sort((a,b)=>b.w*b.h-a.w*a.h);
+  speakerCtx.drawImage(source,0,0,speakerSample.width,speakerSample.height);
+  const frame=speakerCtx.getImageData(0,0,speakerSample.width,speakerSample.height);
+  const faces=detections.map(normalizedFaceBox).filter(Boolean).sort((a,b)=>b.w*b.h-a.w*a.h);
   const usedTracks=new Set(),visible=[];
 
   for(const box of faces){
@@ -408,19 +266,15 @@ async function buildFacePath(c,det,cb){
 
    const id=match?.id??nextTrackId++;
    const old=tracks.get(id)||{id,activity:0,box:null,signature:null};
-   const signature=frame?mouthSignature(frame,box):null;
-   const mouth=frame?signatureChange(signature,old.signature):0;
+   const signature=mouthSignature(frame,box);
+   const mouth=signatureChange(signature,old.signature);
    const movement=old.box?Math.min(1,Math.hypot(box.cx-old.box.cx,box.cy-old.box.cy)/Math.max(20,old.box.w)*.8):0;
-   const landmarkMotion=old.box?Math.min(1,Math.hypot(
-    (box.mouthX-box.x)/Math.max(1,box.w)-(old.box.mouthX-old.box.x)/Math.max(1,old.box.w),
-    (box.mouthY-box.y)/Math.max(1,box.h)-(old.box.mouthY-old.box.y)/Math.max(1,old.box.h)
-   )*8):0;
-   const mouthScore=frame?Math.min(1,mouth*4.8):landmarkMotion;
-   const instantActivity=frame?mouthScore*.82+movement*.18:mouthScore*.68+movement*.32;
+   const mouthScore=Math.min(1,mouth*4.8);
+   const instantActivity=mouthScore*.82+movement*.18;
    const activity=old.activity*.48+instantActivity*.52;
    const area=Math.min(1,Math.sqrt((box.w*box.h)/Math.max(1,source.videoWidth*source.videoHeight)/.11));
    const center=Math.max(0,1-Math.abs(box.cx/source.videoWidth-.5)*1.35);
-   const score=mouthScore*.52+activity*.25+movement*.10+area*.07+center*.025+box.confidence*.035;
+   const score=mouthScore*.54+activity*.25+movement*.08+area*.07+center*.025+box.confidence*.035;
    const tr={id,box,signature,activity,mouth:mouthScore,movement,score,lastSeen:n};
    tracks.set(id,tr);usedTracks.add(id);visible.push(tr)
   }
@@ -461,8 +315,8 @@ async function buildFacePath(c,det,cb){
  return points
 }
 
-function faceAt(path,t,video=source){
- if(!path?.length)return{x:video.videoWidth/2,y:video.videoHeight/2};
+function faceAt(path,t){
+ if(!path?.length)return{x:source.videoWidth/2,y:source.videoHeight/2};
  if(t<=path[0].t)return{x:path[0].x,y:path[0].y};
  if(t>=path[path.length-1].t)return{x:path[path.length-1].x,y:path[path.length-1].y};
  let lo=0,hi=path.length-1;
@@ -474,266 +328,29 @@ function faceAt(path,t,video=source){
  return{x:a.x+(b.x-a.x)*u,y:a.y+(b.y-a.y)*u}
 }
 
-function createLiveSpeakerTracker(video,det){
- const vw=mediaWidth(video),vh=mediaHeight(video);
- let previous=[],nextId=1,activeId=null,challengerId=null,challengerFrames=0;
- let smooth={x:vw/2,y:vh/2};
- return()=>{
-  let detections=[];
-  try{detections=det.detect(video)?.detections||[]}catch{}
-  const boxes=detections.map(d=>normalizedFaceBox(d,video)).filter(Boolean).sort((a,b)=>b.w*b.h-a.w*a.h);
-  const used=new Set(),visible=[];
-  for(const box of boxes){
-   let match=null,bestCost=Infinity;
-   for(const old of previous){
-    if(used.has(old.id))continue;
-    const distance=Math.hypot((box.cx-old.box.cx)/vw,(box.cy-old.box.cy)/vh);
-    const overlap=boxIou(box,old.box),cost=distance*2.7+(1-overlap)*.3;
-    if((overlap>.02||distance<.2)&&cost<bestCost){match=old;bestCost=cost}
-   }
-   const id=match?.id??nextId++;
-   const movement=match?Math.min(1,Math.hypot(box.cx-match.box.cx,box.cy-match.box.cy)/Math.max(20,match.box.w)):0;
-   const mouthMotion=match?Math.min(1,Math.hypot(
-    (box.mouthX-box.x)/Math.max(1,box.w)-(match.box.mouthX-match.box.x)/Math.max(1,match.box.w),
-    (box.mouthY-box.y)/Math.max(1,box.h)-(match.box.mouthY-match.box.y)/Math.max(1,match.box.h)
-   )*9):0;
-   const activity=(match?.activity||0)*.45+(mouthMotion*.72+movement*.28)*.55;
-   const area=Math.min(1,Math.sqrt((box.w*box.h)/Math.max(1,vw*vh)/.11));
-   const center=Math.max(0,1-Math.abs(box.cx/vw-.5)*1.35);
-   const score=mouthMotion*.50+activity*.28+movement*.10+area*.07+center*.025+box.confidence*.025;
-   const track={id,box,activity,mouth:mouthMotion,score};used.add(id);visible.push(track)
-  }
-  const best=visible.reduce((a,b)=>!a||b.score>a.score?b:a,null);
-  const current=visible.find(x=>x.id===activeId)||null;
-  let switched=false;
-  if(!current){if(best){activeId=best.id;switched=true}challengerId=null;challengerFrames=0}
-  else if(best&&best.id!==activeId&&best.score>current.score+.08){
-   if(challengerId===best.id)challengerFrames++;else{challengerId=best.id;challengerFrames=1}
-   if(challengerFrames>=2){activeId=best.id;switched=true;challengerId=null;challengerFrames=0}
-  }else{challengerId=null;challengerFrames=0}
-  const chosen=visible.find(x=>x.id===activeId)||best;
-  if(chosen){
-   const alpha=switched?.7:.32;
-   smooth.x=smooth.x*(1-alpha)+chosen.box.cx*alpha;
-   smooth.y=smooth.y*(1-alpha*.68)+chosen.box.cy*(alpha*.68)
-  }
-  previous=visible;
-  return smooth
- }
-}
-
-async function prepareMobileSource(t){
- suspendPreviews();
- const editVideo=$("editVideo");
- if(MOBILE&&editVideo){try{editVideo.pause();editVideo.removeAttribute("src");editVideo.load()}catch{}}
- source.pause();source.muted=true;source.playsInline=true;
- if(source.error||source.readyState<1){
-  if(sourceUrl&&sourceUrl!==url)URL.revokeObjectURL(sourceUrl);
-  source.removeAttribute("src");source.load();await sleep(80);
-  sourceUrl=URL.createObjectURL(file);source.src=sourceUrl;source.load();await meta(source)
- }
- await seek(t)
-}
-
-async function exportClipDecoded(i,cb){
- const c=clips[i],[W,H]=size();
- canvas.width=W;canvas.height=H;
- if(!window.VideoEncoder)throw new Error("Smooth MP4 export needs an updated Chrome or Edge browser");
- suspendPreviews();source.pause();
- const editVideo=$("editVideo");
- if(editVideo){try{editVideo.pause();editVideo.removeAttribute("src");editVideo.load()}catch{}}
-
- cb("Opening video frames directly…");
- const mediaInput=new Input({formats:ALL_FORMATS,source:new BlobSource(file)});
- const target=new BufferTarget(),output=new Output({format:new Mp4OutputFormat(),target});
- const videoOut=new CanvasSource(canvas,{codec:"avc",bitrate:4200000,hardwareAcceleration:"prefer-hardware",keyFrameInterval:2});
- output.addVideoTrack(videoOut,{frameRate:30});
- let audioOut=null,started=false,videoClosed=false,audioClosed=false;
- try{
-  const videoTrack=await mediaInput.getPrimaryVideoTrack();
-  if(!videoTrack)throw new Error("No video track found");
-  const inputAudioTrack=await mediaInput.getPrimaryAudioTrack();
-  if(inputAudioTrack){audioOut=new AudioBufferSource({codec:"aac",bitrate:160000});output.addAudioTrack(audioOut)}
-  const videoSink=new VideoSampleSink(videoTrack,{hardwareAcceleration:"prefer-hardware"});
-  const det=$("layout").value==="auto"?await initDetector():null;
-  await output.start();started=true;
-
-  cb("Rendering directly… 0%");
-  const fps=30,frameDuration=1/fps,total=Math.max(frameDuration,c.end-c.start);
-  let frameNumber=0,nextFrameTime=0,lastDetection=-Infinity,liveTracker=null,liveFace=null,decodedFrames=0;
-  for await(const frameSample of videoSink.samples(c.start,c.end)){
-   try{
-    const t=Math.max(c.start,Math.min(c.end,frameSample.timestamp)),relative=t-c.start;
-    if(det&&t-lastDetection>=.45){
-     if(!liveTracker){
-      speakerSample.width=320;speakerSample.height=Math.max(1,Math.round(320*frameSample.displayHeight/frameSample.displayWidth));
-      liveTracker=createLiveSpeakerTracker(speakerSample,det);
-      liveFace={x:speakerSample.width/2,y:speakerSample.height/2}
-     }
-     speakerCtx.clearRect(0,0,speakerSample.width,speakerSample.height);
-     frameSample.draw(speakerCtx,0,0,speakerSample.width,speakerSample.height);
-     liveFace=liveTracker();lastDetection=t
-    }
-    const face=liveFace?{x:liveFace.x/speakerSample.width*frameSample.displayWidth,y:liveFace.y/speakerSample.height*frameSample.displayHeight}:{x:frameSample.displayWidth/2,y:frameSample.displayHeight/2};
-    ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);
-    if($("layout").value==="fit")drawSampleFit(frameSample);else drawSampleCover(frameSample,face.x,face.y);
-    drawText(c,t);
-    while(nextFrameTime<=relative+frameDuration/2&&nextFrameTime<total){
-     await videoOut.add(nextFrameTime,Math.min(frameDuration,total-nextFrameTime),{keyFrame:frameNumber%(fps*2)===0});
-     frameNumber++;nextFrameTime=frameNumber/fps
-    }
-    decodedFrames++;
-    if(decodedFrames%8===0){cb(`Rendering directly… ${Math.round(Math.max(0,Math.min(1,relative/total))*100)}%`);await sleep(0)}
-   }finally{frameSample.close()}
-  }
-  if(!decodedFrames)throw new Error("The selected clip has no readable video frames");
-  while(nextFrameTime<total){await videoOut.add(nextFrameTime,Math.min(frameDuration,total-nextFrameTime),{keyFrame:frameNumber%(fps*2)===0});frameNumber++;nextFrameTime=frameNumber/fps}
-  videoOut.close();videoClosed=true;
-
-  if(audioOut&&inputAudioTrack){
-   cb("Adding audio…");
-   try{
-    const audioSink=new AudioBufferSink(inputAudioTrack);
-    for await(const {buffer,timestamp} of audioSink.buffers(c.start,c.end)){
-     await audioOut.add(buffer);
-     if(Math.round(timestamp)%5===0)await sleep(0)
-    }
-   }catch(e){console.warn("Mobile audio decode unavailable",e)}
-   audioOut.close();audioClosed=true
-  }
-  cb("Finalizing smooth MP4…");
-  await output.finalize();
-  return{blob:new Blob([target.buffer],{type:"video/mp4"}),ext:"mp4"}
- }catch(e){
-  if(!videoClosed){try{videoOut.close()}catch{}}
-  if(audioOut&&!audioClosed){try{audioOut.close()}catch{}}
-  if(started)await output.cancel().catch(()=>{});
-  throw e
- }finally{mediaInput.dispose()}
-}
-
-async function exportClipRecorder(i,cb){
- const c=clips[i],[W,H]=size();
- canvas.width=W;canvas.height=H;
- if(!window.MediaRecorder||!canvas.captureStream)throw new Error('This Samsung browser cannot record the clip. Update Chrome and retry.');
-
- cb('Samsung compatibility · opening video…');
- await resetPlaybackSource(c.start);
- source.muted=true;source.playsInline=true;
- try{
-  await source.play();
-  await sleep(100);
-  source.pause();
-  await seek(c.start,source)
- }catch(e){throw new Error('Samsung could not start this video. Close other video tabs, select it again, and retry.')}
-
- const chosenMime=mime();
- if(!chosenMime)throw new Error('This Samsung browser has no supported video recorder. Update Chrome and retry.');
- const outputStream=canvas.captureStream(30);
- let playbackStream=null;
- try{
-  const capture=source.captureStream||source.mozCaptureStream;
-  if(capture){playbackStream=capture.call(source);for(const track of playbackStream.getAudioTracks())outputStream.addTrack(track)}
- }catch(e){console.warn('Samsung audio capture unavailable; exporting video only',e)}
-
- let recorder;
- try{recorder=new MediaRecorder(outputStream,{mimeType:chosenMime,videoBitsPerSecond:3500000,audioBitsPerSecond:128000})}
- catch(e){
-  try{recorder=new MediaRecorder(outputStream,{mimeType:chosenMime})}
-  catch{throw new Error('Samsung could not start the compatibility recorder. Update Chrome and retry.')}
- }
-
- const chunks=[];
- recorder.ondataavailable=e=>{if(e.data?.size)chunks.push(e.data)};
- const det=$('layout').value==='auto'?await initDetector():null;
- const liveTracker=det?createLiveSpeakerTracker(source,det):null;
- let liveFace={x:source.videoWidth/2,y:source.videoHeight/2},lastDetection=-Infinity;
- const total=Math.max(.2,c.end-c.start);
-
- cb('Samsung compatibility · rendering 0%');
- recorder.start(1000);
- try{await source.play()}
- catch(e){try{recorder.stop()}catch{};throw new Error('Samsung could not play the selected clip. Select the original video again and retry.')}
-
- let lastTime=source.currentTime,lastAdvance=performance.now(),lastShown=-1,recordingError=null;
- await new Promise((resolve,reject)=>{
-  recorder.onerror=e=>{recordingError=e?.error||new Error('Samsung recording failed');try{source.pause()}catch{};try{if(recorder.state!=='inactive')recorder.stop()}catch{};reject(recordingError)};
-  recorder.onstop=()=>recordingError?reject(recordingError):resolve();
-  const stop=()=>{try{source.pause()}catch{};try{if(recorder.state!=='inactive'){recorder.requestData();recorder.stop()}}catch(e){reject(e)}};
-  const tick=()=>{
-   if(recorder.state==='inactive')return;
-   try{
-    const t=Math.max(c.start,Math.min(c.end,source.currentTime));
-    if(t>lastTime+.002){lastTime=t;lastAdvance=performance.now()}
-    else if(performance.now()-lastAdvance>12000)throw new Error('Samsung stopped reading the video during export. Keep the page open and retry.');
-    if(liveTracker&&t-lastDetection>=.45){liveFace=liveTracker();lastDetection=t}
-    const face=liveTracker?liveFace:{x:source.videoWidth/2,y:source.videoHeight/2};
-    ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);
-    if($('layout').value==='fit')drawFit(source);else drawCover(source,face.x,face.y);
-    drawText(c,t);
-    const pct=Math.round(Math.max(0,Math.min(1,(t-c.start)/total))*100);
-    if(pct!==lastShown&&pct%2===0){lastShown=pct;cb(`Samsung compatibility · rendering ${pct}%`)}
-    if(t>=c.end-.02||source.ended){stop();return}
-    requestAnimationFrame(tick)
-   }catch(e){recordingError=e;stop()}
-  };
-  requestAnimationFrame(tick)
- });
-
- for(const track of outputStream.getTracks())try{track.stop()}catch{}
- if(playbackStream)for(const track of playbackStream.getTracks())try{track.stop()}catch{}
- if(recordingError)throw recordingError;
- if(!chunks.length)throw new Error('Samsung created an empty clip. Keep this page open and retry.');
- cb('Finalizing Samsung-compatible video…');
- const type=recorder.mimeType||chosenMime,blob=new Blob(chunks,{type});
- return{blob,ext:type.includes('mp4')?'mp4':'webm'}
-}
-
 async function exportClip(i,cb){
  const c=clips[i];
- if(MOBILE)suspendPreviews();
 
  // Export has 3 clear visible phases:
  // 1) Whisper transcription, 2) face reframe preparation, 3) rendering.
  if($("captions").checked&&!c.words){
   cb("Transcribing with Whisper AI…");
-  try{await captionsFor(i,m=>cb(m||"Transcribing with Whisper AI…"));c.captionSkipped=false}
-  catch(e){
-   if(!MOBILE)throw e;
-   console.warn("Mobile caption model unavailable; continuing without new captions",e);
-   c.words=[];c.captionSkipped=true;c.transcript="This phone could not download the AI caption model. The clip was exported without new captions.";
-   cb("Caption download unavailable · continuing export…")
-  }
+  await captionsFor(i,()=>cb("Transcribing with Whisper AI…"));
  }
-
- if(MOBILE){
-  if(SAMSUNG)return exportClipRecorder(i,cb);
-  try{return await exportClipDecoded(i,cb)}
-  catch(e){console.warn('Direct mobile export failed; using playback recorder',e);cb('Mobile compatibility export…');return exportClipRecorder(i,cb)}
- }
-
- if(MOBILE){
-  suspendPreviews();
-  const editVideo=$("editVideo");
-  if(editVideo){try{editVideo.pause();editVideo.removeAttribute("src");editVideo.load()}catch{}}
- }else await prepareMobileSource(c.start);
 
  const [W,H]=size();
  canvas.width=W;canvas.height=H;
 
  cb("Preparing face reframe…");
  const det=$("layout").value==="auto"?await initDetector():null;
- const facePath=det&&!MOBILE?await buildFacePath(c,det,m=>cb(m.startsWith("Preparing face reframe")?m:"Preparing face reframe…")):null;
- if(det&&MOBILE)cb("Active speaker tracking ready · rendering in one pass…");
+ const facePath=det?await buildFacePath(c,det,m=>cb(m.startsWith("Preparing face reframe")?m:"Preparing face reframe…")):null;
 
  cb("Rendering… 0%");
+ await seek(c.start);
+ source.muted=false;
 
  if(!window.VideoEncoder)
   throw new Error("Smooth MP4 export needs an updated Chrome or Edge browser");
-
- const playback=source;
- playback.pause();playback.muted=true;
- await seek(c.start,playback);
 
  // Mediabunny writes explicit, monotonic 30 FPS timestamps. This avoids the
  // duplicate MP4 timestamps produced by Chrome's MediaRecorder implementation.
@@ -773,34 +390,25 @@ async function exportClip(i,cb){
   audioOut.close()
  })():Promise.resolve();
 
- try{await playback.play()}
- catch(e){
-  throw new Error(MOBILE?"Samsung could not start the original video. Select the video again and retry.":(e.message||e))
- }
+ await source.play();
 
  const fps=30,frameDuration=1/fps,total=Math.max(frameDuration,c.end-c.start);
- const liveTracker=det&&MOBILE?createLiveSpeakerTracker(playback,det):null;
- let liveFace={x:playback.videoWidth/2,y:playback.videoHeight/2},lastDetection=-Infinity;
- let frameNumber=0,nextFrameTime=0,finished=false,renderError=null,lastVideoTime=playback.currentTime,lastAdvanceAt=performance.now();
+ let frameNumber=0,nextFrameTime=0,finished=false,renderError=null;
  try{
   await new Promise((resolve,reject)=>{
    const tick=async()=>{
     if(finished)return;
     try{
-     const t=Math.min(c.end,playback.currentTime);
+     const t=Math.min(c.end,source.currentTime);
      const relative=Math.max(0,t-c.start);
-     if(t>lastVideoTime+.002){lastVideoTime=t;lastAdvanceAt=performance.now()}
-     else if(performance.now()-lastAdvanceAt>8000)throw new Error("Samsung stopped video playback. Please keep this page open while exporting.");
-
-     if(liveTracker&&t-lastDetection>=.45){liveFace=liveTracker();lastDetection=t}
 
      // Add every required output frame once, using exact sequential timestamps.
      while(nextFrameTime<=relative+frameDuration/2&&nextFrameTime<total){
-      const face=liveTracker?liveFace:faceAt(facePath,t,playback);
+      const face=faceAt(facePath,t);
       ctx.fillStyle="#000";
       ctx.fillRect(0,0,W,H);
-      if($("layout").value==="fit")drawFit(playback);
-      else drawCover(playback,face.x,face.y);
+      if($("layout").value==="fit")drawFit(source);
+      else drawCover(source,face.x,face.y);
       drawText(c,t);
 
       await videoOut.add(nextFrameTime,Math.min(frameDuration,total-nextFrameTime),{
@@ -811,7 +419,7 @@ async function exportClip(i,cb){
      }
 
      cb(`Rendering… ${Math.round(Math.max(0,Math.min(1,relative/total))*100)}%`);
-     if(t>=c.end||playback.ended){finished=true;resolve();return}
+     if(t>=c.end||source.ended){finished=true;resolve();return}
      requestAnimationFrame(tick)
     }catch(e){finished=true;reject(e)}
    };
@@ -819,7 +427,7 @@ async function exportClip(i,cb){
   });
  }catch(e){renderError=e}
  finally{
-  playback.pause();
+  source.pause();
   videoOut.close()
  }
 
@@ -839,11 +447,6 @@ function exportUi(message){
  s.textContent=message;
  let pct=0;
  if(message.startsWith("Transcribing with Whisper AI"))pct=28;
- else if(message.startsWith("Samsung compatibility · opening"))pct=5;
- else if(message.startsWith("Samsung compatibility · rendering")){
-  const m=message.match(/(\d+)%/);
-  pct=10+(m?Math.round(+m[1]*.88):0);
- }else if(message.startsWith("Finalizing Samsung-compatible"))pct=99;
  else if(message.startsWith("Preparing face reframe")){
   const m=message.match(/(\d+)%/);
   pct=36+(m?Math.round(+m[1]*.24):4);
@@ -853,6 +456,6 @@ function exportUi(message){
  }else if(message.startsWith("Finalizing smooth MP4"))pct=99;
  bar.style.width=`${Math.min(100,pct)}%`;
 }
-window.quickExport=async(i,b)=>{const s=$(`cardStatus${i}`);b.disabled=true;try{const r=await exportClip(i,m=>s.textContent=m);save(r.blob,`ClipNova-Clip-${i+1}.${r.ext}`);s.className="small ok";s.textContent=clips[i].captionSkipped?`Done · ${(r.blob.size/1048576).toFixed(1)} MB · without new captions`:`Done · ${(r.blob.size/1048576).toFixed(1)} MB`}catch(e){s.className="small error";s.textContent=e.message||e}finally{restorePreviews();b.disabled=false}};
-$("exportOne").onclick=async()=>{const b=$("exportOne");b.disabled=true;const old=b.textContent;b.textContent="Exporting…";$("exportBar").style.width="0%";try{const r=await exportClip(editIndex,exportUi);save(r.blob,`ClipNova-Clip-${editIndex+1}.${r.ext}`);$("exportBar").style.width="100%";$("exportStatus").className="small ok";$("exportStatus").textContent=clips[editIndex].captionSkipped?"Done · without new captions":"Done";}catch(e){$("exportStatus").className="small error";$("exportStatus").textContent=e.message||e}finally{restorePreviews();b.disabled=false;b.textContent=old}};
-$("exportAll").onclick=async()=>{const b=$("exportAll");b.disabled=true;try{for(let i=0;i<clips.length;i++){const s=$(`cardStatus${i}`),r=await exportClip(i,m=>s.textContent=`Batch: ${m}`);save(r.blob,`ClipNova-Clip-${i+1}.${r.ext}`);s.textContent=clips[i].captionSkipped?"Exported · without new captions":"Exported";await sleep(500)}}finally{restorePreviews();b.disabled=false}};
+window.quickExport=async(i,b)=>{const s=$(`cardStatus${i}`);b.disabled=true;try{const r=await exportClip(i,m=>s.textContent=m);save(r.blob,`ClipNova-Clip-${i+1}.${r.ext}`);s.className="small ok";s.textContent=`Done · ${(r.blob.size/1048576).toFixed(1)} MB`}catch(e){s.className="small error";s.textContent=e.message||e}finally{b.disabled=false}};
+$("exportOne").onclick=async()=>{const b=$("exportOne");b.disabled=true;const old=b.textContent;b.textContent="Exporting…";$("exportBar").style.width="0%";try{const r=await exportClip(editIndex,exportUi);save(r.blob,`ClipNova-Clip-${editIndex+1}.${r.ext}`);$("exportBar").style.width="100%";$("exportStatus").className="small ok";$("exportStatus").textContent="Done";}catch(e){$("exportStatus").className="small error";$("exportStatus").textContent=e.message||e}finally{b.disabled=false;b.textContent=old}};
+$("exportAll").onclick=async()=>{const b=$("exportAll");b.disabled=true;try{for(let i=0;i<clips.length;i++){const s=$(`cardStatus${i}`),r=await exportClip(i,m=>s.textContent=`Batch: ${m}`);save(r.blob,`ClipNova-Clip-${i+1}.${r.ext}`);s.textContent="Exported";await sleep(500)}}finally{b.disabled=false}};
