@@ -2,7 +2,7 @@ import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,Output,Mp4OutputFormat,Buff
 const $=id=>document.getElementById(id),source=$("source"),sample=$("sample"),sctx=sample.getContext("2d",{willReadFrequently:true}),canvas=$("renderCanvas"),ctx=canvas.getContext("2d");
 const speakerSample=document.createElement("canvas"),speakerCtx=speakerSample.getContext("2d",{willReadFrequently:true});
 speakerSample.width=320;speakerSample.height=180;
-let file=null,url=null,duration=0,features=[],clips=[],editIndex=-1,detector=null,detectorTried=false,transcriber=null,loadingTranscriber=null,lastFace={x:0,y:0};
+let file=null,url=null,duration=0,features=[],clips=[],editIndex=-1,detector=null,detectorTried=false,landmarker=null,landmarkerTried=false,landmarkerClock=0,transcriber=null,loadingTranscriber=null,lastFace={x:0,y:0};
 const faceToggle=$("faceTracking")?.closest(".toggle");
 if(faceToggle){
  const title=faceToggle.querySelector("b"),note=faceToggle.querySelector(".small");
@@ -16,6 +16,29 @@ async function meta(el=source){if(el.readyState>=1&&Number.isFinite(el.duration)
 $("file").onchange=async()=>{file=$("file").files?.[0]||null;clips=[];$("resultsCard").classList.add("hidden");if(url)URL.revokeObjectURL(url);if(!file)return;url=URL.createObjectURL(file);source.src=url;$("fileInfo").textContent=`${file.name} · reading…`;try{await meta();duration=source.duration;$("fileInfo").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB · ${fmt(duration)}`;$("startSec").value="0.00";$("endSec").value=(duration/60).toFixed(2);$("startSec").max=(duration/60).toFixed(2);$("endSec").max=(duration/60).toFixed(2);$("rangeBox").classList.remove("hidden");$("settings").classList.remove("hidden");syncRange()}catch(e){$("fileInfo").textContent=e.message}};
 function syncRange(){let s=Math.max(0,(+$("startSec").value||0)*60),e=Math.min(duration,(+$("endSec").value||duration/60)*60);if(e<s+.5)e=Math.min(duration,s+.5);if(s>e-.5)s=Math.max(0,e-.5);$("startSec").value=(s/60).toFixed(2);$("endSec").value=(e/60).toFixed(2);$("startRange").value=duration?s/duration*100:0;$("endRange").value=duration?e/duration*100:100;$("rangeText").textContent=`Analyze ${fmt(s)} – ${fmt(e)} (${fmt(e-s)})`};$("startRange").oninput=()=>{$("startSec").value=(duration*+$("startRange").value/100/60).toFixed(2);syncRange()};$("endRange").oninput=()=>{$("endSec").value=(duration*+$("endRange").value/100/60).toFixed(2);syncRange()};$("startSec").onchange=syncRange;$("endSec").onchange=syncRange;
 async function initDetector(){if(!$("faceTracking").checked)return null;if(detector)return detector;if(detectorTried)return null;detectorTried=true;try{const {FilesetResolver,FaceDetector}=await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/+esm");const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");detector=await FaceDetector.createFromOptions(vision,{baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",delegate:"CPU"},runningMode:"IMAGE",minDetectionConfidence:.38,minSuppressionThreshold:.25});return detector}catch(e){console.warn(e);return null}}
+async function initLandmarker(){
+ if(!$("faceTracking").checked)return null;
+ if(landmarker)return landmarker;
+ if(landmarkerTried)return null;
+ landmarkerTried=true;
+ try{
+  const {FilesetResolver,FaceLandmarker}=await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/+esm");
+  const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
+  landmarker=await FaceLandmarker.createFromOptions(vision,{
+   baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",delegate:"CPU"},
+   runningMode:"VIDEO",numFaces:6,outputFaceBlendshapes:true,
+   minFaceDetectionConfidence:.35,minFacePresenceConfidence:.35,minTrackingConfidence:.35
+  });
+  return landmarker
+ }catch(e){console.warn("Detailed active-speaker landmarks unavailable; using face detector fallback",e);return null}
+}
+async function initSpeakerVision(){
+ if(!$("faceTracking").checked)return null;
+ const detailed=await initLandmarker();
+ if(detailed)return{landmarker:detailed};
+ const fallback=await initDetector();
+ return fallback?{detector:fallback}:null
+}
 function stats(prev){sctx.drawImage(source,0,0,200,112);const d=sctx.getImageData(0,0,200,112).data,g=new Uint8Array(22400);let motion=0,edge=0,lum=0;for(let i=0,p=0;i<d.length;i+=4,p++){const v=(d[i]*77+d[i+1]*150+d[i+2]*29)>>8;g[p]=v;lum+=v}if(prev)for(let i=0;i<g.length;i+=3)motion+=Math.abs(g[i]-prev[i]);for(let y=1;y<111;y+=2)for(let x=1;x<199;x+=2){const p=y*200+x;edge+=Math.abs(g[p]-g[p-1])+Math.abs(g[p]-g[p-200])}return {g,motion:prev?motion/(Math.ceil(g.length/3)*255):0,edge:edge/(100*56*2*255),lum:lum/g.length/255}}
 async function analyze(){const s=(+$("startSec").value)*60,e=(+$("endSec").value)*60,span=e-s,n=Math.min(260,Math.max(24,Math.ceil(span))),det=await initDetector();features=[];let prev=null;for(let i=0;i<n;i++){const t=s+(span-.05)*(i/(n-1));await seek(t);const f=stats(prev);prev=f.g;let face=0;if(det&&i%2===0){try{const r=det.detect(source);if(r?.detections?.length){const b=r.detections.reduce((a,b)=>b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a);face=Math.min(1,(b.boundingBox.width*b.boundingBox.height)/(source.videoWidth*source.videoHeight)*8+.3)}}catch{}}const scene=Math.min(1,f.motion*2.4),score=f.motion*.4+scene*.25+f.edge*.2+face*.12+Math.min(1,Math.abs(f.lum-.5)+.2)*.03;features.push({t,score,face});if(i%3===0){$("bar").style.width=`${Math.round(5+78*(i+1)/n)}%`;$("status").textContent=`Analyzing ${i+1}/${n} frames…`}if(i%6===0)await sleep(0)}}
 function choose(){const rs=(+$("startSec").value)*60,re=(+$("endSec").value)*60,len=+$("clipLength").value,count=+$("clipCount").value;if(re-rs<=len)return[{start:rs,end:re,score:90,words:null,transcript:""}];const wins=[],step=Math.max(2,len/6);for(let st=rs;st<=re-len+.001;st+=step){const en=st+len,a=features.filter(x=>x.t>=st&&x.t<en);if(!a.length)continue;const vals=a.map(x=>x.score),avg=vals.reduce((x,y)=>x+y,0)/vals.length,peak=Math.max(...vals),early=a.filter(x=>x.t<st+len/3),hook=early.length?Math.max(...early.map(x=>x.score)):0,faces=a.reduce((x,y)=>x+y.face,0)/a.length;wins.push({start:st,end:en,raw:avg*.48+peak*.31+hook*.15+faces*.06,words:null,transcript:""})}wins.sort((a,b)=>b.raw-a.raw);const out=[];for(const w of wins){if(out.some(c=>Math.max(0,Math.min(c.end,w.end)-Math.max(c.start,w.start))>len*.32))continue;out.push(w);if(out.length>=count)break}for(const w of wins){if(out.length>=count)break;if(!out.includes(w))out.push(w)}const lo=Math.min(...out.map(x=>x.raw)),hi=Math.max(...out.map(x=>x.raw)),sp=Math.max(.0001,hi-lo);out.forEach(x=>x.score=Math.round(70+29*(x.raw-lo)/sp));return out.sort((a,b)=>a.start-b.start)}
@@ -197,6 +220,46 @@ function normalizedFaceBox(d){
  return{x,y,w,h,cx:x+w/2,cy:y+h/2,mouthX:mouth?mouth.x*source.videoWidth:x+w/2,mouthY:mouth?mouth.y*source.videoHeight:y+h*.74,confidence:d.categories?.[0]?.score??.5}
 }
 
+const clamp01=v=>Math.max(0,Math.min(1,v));
+function pointDistance(a,b){return a&&b?Math.hypot(a.x-b.x,a.y-b.y):0}
+function blendshapeScores(item){
+ const out={};
+ for(const c of (item?.categories||[]))out[c.categoryName||c.displayName||'']=c.score||0;
+ return out
+}
+function landmarkFaceBox(points,blendshape){
+ if(!points?.length)return null;
+ let minX=1,minY=1,maxX=0,maxY=0;
+ for(const p of points){if(!Number.isFinite(p.x)||!Number.isFinite(p.y))continue;minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y)}
+ if(maxX<=minX||maxY<=minY)return null;
+ const rawW=maxX-minX,rawH=maxY-minY;
+ minX=Math.max(0,minX-rawW*.08);maxX=Math.min(1,maxX+rawW*.08);
+ minY=Math.max(0,minY-rawH*.10);maxY=Math.min(1,maxY+rawH*.06);
+ const x=minX*source.videoWidth,y=minY*source.videoHeight,w=(maxX-minX)*source.videoWidth,h=(maxY-minY)*source.videoHeight;
+ const upper=points[13],lower=points[14],left=points[61],right=points[291],leftEye=points[33],rightEye=points[263];
+ const mouthX=((left?.x??(minX+maxX)/2)+(right?.x??(minX+maxX)/2))/2*source.videoWidth;
+ const mouthY=((upper?.y??(minY+maxY)/2)+(lower?.y??(minY+maxY)/2))/2*source.videoHeight;
+ const faceH=Math.max(.001,maxY-minY),faceW=Math.max(.001,maxX-minX),eyeSpan=Math.max(.001,pointDistance(leftEye,rightEye));
+ const shapes=blendshapeScores(blendshape);
+ const lipVector=new Float32Array([
+  pointDistance(upper,lower)/faceH,
+  pointDistance(left,right)/faceW,
+  pointDistance(upper,lower)/eyeSpan,
+  shapes.jawOpen||0,shapes.mouthClose||0,shapes.mouthFunnel||0,shapes.mouthPucker||0,
+  ((shapes.mouthSmileLeft||0)+(shapes.mouthSmileRight||0))/2,
+  ((shapes.mouthStretchLeft||0)+(shapes.mouthStretchRight||0))/2
+ ]);
+ return{x,y,w,h,cx:x+w/2,cy:y+h/2,mouthX,mouthY,confidence:.9,lipVector,detailed:true}
+}
+
+function lipVectorChange(a,b){
+ if(!a||!b||a.length!==b.length)return 0;
+ const weights=[8,4,7,1.6,1.1,1.0,1.0,.55,.7];
+ let total=0;
+ for(let i=0;i<a.length;i++)total+=Math.abs(a[i]-b[i])*weights[i];
+ return clamp01(total/2.15)
+}
+
 function boxIou(a,b){
  const x1=Math.max(a.x,b.x),y1=Math.max(a.y,b.y);
  const x2=Math.min(a.x+a.w,b.x+b.w),y2=Math.min(a.y+a.h,b.y+b.h);
@@ -234,81 +297,113 @@ function signatureChange(a,b){
  return Math.min(1,total/(a.length*24))
 }
 
-async function buildFacePath(c,det,cb){
- if(!det)return null;
+async function detectSpeakerFaces(vision){
+ if(vision?.landmarker){
+  try{
+   landmarkerClock=Math.max(landmarkerClock+1,performance.now());
+   const result=await vision.landmarker.detectForVideo(source,landmarkerClock);
+   const faces=(result?.faceLandmarks||[]).map((points,i)=>landmarkFaceBox(points,result?.faceBlendshapes?.[i])).filter(Boolean);
+   if(faces.length)return faces
+  }catch(e){console.warn("Detailed landmark frame failed; using detector fallback",e)}
+ }
+ if(!vision?.detector)vision.detector=await initDetector();
+ if(!vision?.detector)return[];
+ try{return(vision.detector.detect(source)?.detections||[]).map(normalizedFaceBox).filter(Boolean)}catch{return[]}
+}
+
+async function buildFacePath(c,vision,cb){
+ if(!vision)return null;
  const span=Math.max(.2,c.end-c.start);
- const sampleCount=Math.min(300,Math.max(18,Math.ceil(span/.35)));
+ const sampleCount=Math.min(360,Math.max(24,Math.ceil(span/.28)));
  const step=span/Math.max(1,sampleCount-1);
  const points=[],tracks=new Map();
- let previousVisible=[],nextTrackId=1,activeId=null,challengerId=null,challengerFrames=0,smooth=null;
+ let nextTrackId=1,activeId=null,activeSince=-99,challengerId=null,challengerFrames=0,smooth=null;
 
  for(let n=0;n<sampleCount;n++){
   const t=Math.min(c.end-.03,c.start+n*step);
   await seek(t);
-  let detections=[];
-  try{detections=det.detect(source)?.detections||[]}catch{}
-
-  speakerCtx.drawImage(source,0,0,speakerSample.width,speakerSample.height);
-  const frame=speakerCtx.getImageData(0,0,speakerSample.width,speakerSample.height);
-  const faces=detections.map(normalizedFaceBox).filter(Boolean).sort((a,b)=>b.w*b.h-a.w*a.h);
+  const faces=(await detectSpeakerFaces(vision)).sort((a,b)=>a.cx-b.cx);
+  let frame=null;
+  try{speakerCtx.drawImage(source,0,0,speakerSample.width,speakerSample.height);frame=speakerCtx.getImageData(0,0,speakerSample.width,speakerSample.height)}catch{}
   const usedTracks=new Set(),visible=[];
 
   for(const box of faces){
    let match=null,bestCost=Infinity;
-   for(const tr of previousVisible){
+   for(const tr of tracks.values()){
+    if(n-tr.lastSeen>4)continue;
     if(usedTracks.has(tr.id))continue;
     const distance=Math.hypot((box.cx-tr.box.cx)/Math.max(1,source.videoWidth),(box.cy-tr.box.cy)/Math.max(1,source.videoHeight));
     const overlap=boxIou(box,tr.box);
     const sizeCost=Math.abs(Math.log((box.w*box.h)/Math.max(1,tr.box.w*tr.box.h)));
-    const cost=distance*2.8+(1-overlap)*.28+sizeCost*.12;
-    if((overlap>.03||distance<.17)&&cost<bestCost){match=tr;bestCost=cost}
+    const cost=distance*3.2+(1-overlap)*.30+sizeCost*.14+(n-tr.lastSeen)*.035;
+    if((overlap>.025||distance<.19)&&cost<bestCost){match=tr;bestCost=cost}
    }
 
    const id=match?.id??nextTrackId++;
-   const old=tracks.get(id)||{id,activity:0,box:null,signature:null};
-   const signature=mouthSignature(frame,box);
-   const mouth=signatureChange(signature,old.signature);
-   const movement=old.box?Math.min(1,Math.hypot(box.cx-old.box.cx,box.cy-old.box.cy)/Math.max(20,old.box.w)*.8):0;
-   const mouthScore=Math.min(1,mouth*4.8);
-   const instantActivity=mouthScore*.82+movement*.18;
-   const activity=old.activity*.48+instantActivity*.52;
+   const old=tracks.get(id)||{id,fast:0,slow:0,noise:0,box:null,signature:null,lipVector:null,history:[]};
+   const signature=frame?mouthSignature(frame,box):null;
+   const pixelChange=signatureChange(signature,old.signature);
+   const movement=old.box?clamp01(Math.hypot(box.cx-old.box.cx,box.cy-old.box.cy)/Math.max(24,old.box.w)):0;
+   const pixelSpeech=clamp01(pixelChange*4.4-movement*.42);
+   const landmarkSpeech=lipVectorChange(box.lipVector,old.lipVector);
+   const rawSpeech=box.detailed?landmarkSpeech*.76+pixelSpeech*.24:pixelSpeech;
+   const noise=old.noise*.92+Math.min(rawSpeech,.16)*.08;
+   const mouthScore=clamp01(rawSpeech-noise*.30);
+   const fast=old.fast*.34+mouthScore*.66;
+   const slow=old.slow*.76+mouthScore*.24;
+   const history=[...(old.history||[]),mouthScore].slice(-7);
+   const consistency=history.filter(v=>v>.10).length/history.length;
    const area=Math.min(1,Math.sqrt((box.w*box.h)/Math.max(1,source.videoWidth*source.videoHeight)/.11));
    const center=Math.max(0,1-Math.abs(box.cx/source.videoWidth-.5)*1.35);
-   const score=mouthScore*.54+activity*.25+movement*.08+area*.07+center*.025+box.confidence*.035;
-   const tr={id,box,signature,activity,mouth:mouthScore,movement,score,lastSeen:n};
+   // Face size and screen position are only tiny tie-breakers. Lip/jaw motion
+   // and sustained person-specific activity decide the active speaker.
+   const score=clamp01(mouthScore*.48+fast*.25+slow*.17+consistency*.075+(box.confidence||.5)*.018+area*.005+center*.002-movement*.06);
+   const tr={id,box,signature,lipVector:box.lipVector||null,fast,slow,noise,history,consistency,mouth:mouthScore,movement,score,lastSeen:n};
    tracks.set(id,tr);usedTracks.add(id);visible.push(tr)
   }
 
   let switched=false;
-  const best=visible.reduce((a,b)=>!a||b.score>a.score?b:a,null);
+  const speaking=visible.filter(x=>x.mouth>.09||x.fast>.115||x.slow>.12);
+  const best=(speaking.length?speaking:visible).reduce((a,b)=>!a||b.score>a.score?b:a,null);
   const current=visible.find(x=>x.id===activeId)||null;
   if(!current){
-   if(best){activeId=best.id;switched=true}
+   if(best){activeId=best.id;activeSince=n;switched=true}
    challengerId=null;challengerFrames=0
   }else if(best&&best.id!==activeId){
-   const clearlySpeaking=best.mouth>current.mouth+.08||best.activity>current.activity+.10;
-   const clearlyStronger=best.score>current.score+.10;
-   if(clearlySpeaking&&clearlyStronger){
+   const held=n-activeSince;
+   const clearlySpeaking=best.mouth>Math.max(.105,current.mouth+.055)||best.fast>Math.max(.13,current.fast+.065)||best.slow>current.slow+.09;
+   const clearlyStronger=best.score>current.score+.075;
+   if(held>=3&&clearlySpeaking&&clearlyStronger){
     if(challengerId===best.id)challengerFrames++;
     else{challengerId=best.id;challengerFrames=1}
-    if(challengerFrames>=2){activeId=best.id;switched=true;challengerId=null;challengerFrames=0}
+    const needed=best.mouth>.32&&current.mouth<.08?2:3;
+    if(challengerFrames>=needed){activeId=best.id;activeSince=n;switched=true;challengerId=null;challengerFrames=0}
    }else{challengerId=null;challengerFrames=0}
   }else{challengerId=null;challengerFrames=0}
 
   const chosen=visible.find(x=>x.id===activeId)||best;
   if(chosen){
    const target={x:chosen.box.cx,y:chosen.box.cy};
+   // Speaker evidence needs a few frames. Once confirmed, move the last two
+   // path samples toward that speaker so the crop change begins with the words,
+   // not after them.
+   if(switched&&points.length){
+    for(let j=Math.max(0,points.length-2);j<points.length;j++){
+     points[j].x=points[j].x*.18+target.x*.82;
+     points[j].y=points[j].y*.18+target.y*.82;
+     points[j].activeId=activeId
+    }
+   }
    if(!smooth)smooth={...target};
    else{
     const jump=Math.abs(target.x-smooth.x)/Math.max(1,source.videoWidth);
-    const alpha=switched?.72:jump>.18?.52:.30;
+    const alpha=switched?.68:jump>.18?.46:.26;
     smooth.x=smooth.x*(1-alpha)+target.x*alpha;
     smooth.y=smooth.y*(1-alpha*.68)+target.y*(alpha*.68)
    }
   }else if(!smooth)smooth={x:source.videoWidth/2,y:source.videoHeight/2};
 
-  points.push({t,x:smooth.x,y:smooth.y,activeId,faceCount:visible.length});
-  previousVisible=visible;
+  points.push({t,x:smooth.x,y:smooth.y,activeId,faceCount:visible.length,speakerConfidence:chosen?.score||0});
   if(n%5===0)cb(`Preparing face reframe · active speaker… ${Math.round((n+1)/sampleCount*100)}%`);
   if(n%5===0)await sleep(0)
  }
@@ -342,8 +437,8 @@ async function exportClip(i,cb){
  canvas.width=W;canvas.height=H;
 
  cb("Preparing face reframe…");
- const det=$("layout").value==="auto"?await initDetector():null;
- const facePath=det?await buildFacePath(c,det,m=>cb(m.startsWith("Preparing face reframe")?m:"Preparing face reframe…")):null;
+ const speakerVision=$("layout").value==="auto"?await initSpeakerVision():null;
+ const facePath=speakerVision?await buildFacePath(c,speakerVision,m=>cb(m.startsWith("Preparing face reframe")?m:"Preparing face reframe…")):null;
 
  cb("Rendering… 0%");
  await seek(c.start);
