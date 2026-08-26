@@ -43,15 +43,28 @@ function stats(prev){sctx.drawImage(source,0,0,200,112);const d=sctx.getImageDat
 async function analyze(){const s=(+$("startSec").value)*60,e=(+$("endSec").value)*60,span=e-s,n=Math.min(260,Math.max(24,Math.ceil(span))),det=await initDetector();features=[];let prev=null;for(let i=0;i<n;i++){const t=s+(span-.05)*(i/(n-1));await seek(t);const f=stats(prev);prev=f.g;let face=0;if(det&&i%2===0){try{const r=det.detect(source);if(r?.detections?.length){const b=r.detections.reduce((a,b)=>b.boundingBox.width*b.boundingBox.height>a.boundingBox.width*a.boundingBox.height?b:a);face=Math.min(1,(b.boundingBox.width*b.boundingBox.height)/(source.videoWidth*source.videoHeight)*8+.3)}}catch{}}const scene=Math.min(1,f.motion*2.4),score=f.motion*.4+scene*.25+f.edge*.2+face*.12+Math.min(1,Math.abs(f.lum-.5)+.2)*.03;features.push({t,score,face});if(i%3===0){$("bar").style.width=`${Math.round(5+78*(i+1)/n)}%`;$("status").textContent=`Analyzing ${i+1}/${n} frames…`}if(i%6===0)await sleep(0)}}
 function choose(){const rs=(+$("startSec").value)*60,re=(+$("endSec").value)*60,len=+$("clipLength").value,count=+$("clipCount").value;if(re-rs<=len)return[{start:rs,end:re,score:90,words:null,transcript:""}];const wins=[],step=Math.max(2,len/6);for(let st=rs;st<=re-len+.001;st+=step){const en=st+len,a=features.filter(x=>x.t>=st&&x.t<en);if(!a.length)continue;const vals=a.map(x=>x.score),avg=vals.reduce((x,y)=>x+y,0)/vals.length,peak=Math.max(...vals),early=a.filter(x=>x.t<st+len/3),hook=early.length?Math.max(...early.map(x=>x.score)):0,faces=a.reduce((x,y)=>x+y.face,0)/a.length;wins.push({start:st,end:en,raw:avg*.48+peak*.31+hook*.15+faces*.06,words:null,transcript:""})}wins.sort((a,b)=>b.raw-a.raw);const out=[];for(const w of wins){if(out.some(c=>Math.max(0,Math.min(c.end,w.end)-Math.max(c.start,w.start))>len*.32))continue;out.push(w);if(out.length>=count)break}for(const w of wins){if(out.length>=count)break;if(!out.includes(w))out.push(w)}const lo=Math.min(...out.map(x=>x.raw)),hi=Math.max(...out.map(x=>x.raw)),sp=Math.max(.0001,hi-lo);out.forEach(x=>x.score=Math.round(70+29*(x.raw-lo)/sp));return out.sort((a,b)=>a.start-b.start)}
 $("generate").onclick=async()=>{if(!file)return;$("generate").disabled=true;$("status").className="small";$("status").textContent="Starting…";$("bar").style.width="2%";try{await analyze();clips=choose();renderCards();$("bar").style.width="100%";$("status").textContent=`Generated ${clips.length} clips.`;$("resultsCard").classList.remove("hidden");$("resultsCard").scrollIntoView({behavior:"smooth"})}catch(e){$("status").className="small error";$("status").textContent=e.message||e}finally{$("generate").disabled=false}};
-function renderCards(){$("results").innerHTML=clips.map((c,i)=>`<article class="clip"><div class="row"><div><b>Clip ${i+1}</b><div class="small">${fmt(c.start)} – ${fmt(c.end)} · ${(c.end-c.start).toFixed(1)}s</div></div><div class="score">${c.score}/100</div></div><video controls playsinline preload="metadata" src="${url}#t=${c.start},${c.end}"></video><div style="margin-top:7px"><span class="badge">${esc($("aspect").selectedOptions[0].text)}</span><span class="badge">${esc($("layout").selectedOptions[0].text)}</span>${c.words?'<span class="badge">Captions ✓</span>':''}</div><div class="row" style="margin-top:10px"><button class="secondary" onclick="window.openEdit(${i})">Edit clip</button><button class="green" onclick="window.quickExport(${i},this)">Create & Download</button></div><div id="cardStatus${i}" class="small"></div></article>`).join("")}
-window.openEdit=async i=>{editIndex=i;const c=clips[i];$("editTitle").textContent=`Edit Clip ${i+1}`;$("editStart").value=(c.start/60).toFixed(2);$("editEnd").value=(c.end/60).toFixed(2);$("transcript").textContent=c.transcript||"Captions not prepared yet.";$("exportStatus").className="small";$("exportStatus").textContent="Ready to export.";$("exportBar").style.width="0%";const v=$("editVideo");v.src=url;await meta(v).catch(()=>{});v.currentTime=c.start;$("modal").classList.remove("hidden")};$("close").onclick=()=>{$("editVideo").pause();$("modal").classList.add("hidden")};$("applyTrim").onclick=()=>{if(editIndex<0)return;const c=clips[editIndex],s=(+$("editStart").value)*60,e=(+$("editEnd").value)*60;c.start=Math.max(0,Math.min(duration-.2,s));c.end=Math.max(c.start+.2,Math.min(duration,e));$("editStart").value=(c.start/60).toFixed(2);$("editEnd").value=(c.end/60).toFixed(2);c.words=null;c.transcript="";$("transcript").textContent="Trim changed. Prepare captions again if needed.";renderCards()};
+function renderCards(){$("results").innerHTML=clips.map((c,i)=>`<article class="clip"><div class="row"><div><b>Clip ${i+1}</b><div class="small">${fmt(c.start)} – ${fmt(c.end)} · ${(c.end-c.start).toFixed(1)}s</div></div><div class="score">${c.score}/100</div></div><video controls playsinline preload="metadata" src="${url}#t=${c.start},${c.end}"></video><div style="margin-top:7px"><span class="badge">${esc($("aspect").selectedOptions[0].text)}</span><span class="badge">${esc($("layout").selectedOptions[0].text)}</span>${c.words?.length?'<span class="badge">Captions ✓</span>':''}</div><div class="row" style="margin-top:10px"><button class="secondary" onclick="window.openEdit(${i})">Edit clip</button><button class="green" onclick="window.quickExport(${i},this)">Create & Download</button></div><div id="cardStatus${i}" class="small"></div></article>`).join("")}
+window.openEdit=async i=>{editIndex=i;const c=clips[i];$("editTitle").textContent=`Edit Clip ${i+1}`;$("editStart").value=(c.start/60).toFixed(2);$("editEnd").value=(c.end/60).toFixed(2);$("transcript").textContent=c.transcript||"Captions not prepared yet.";$("exportStatus").className="small";$("exportStatus").textContent="Ready to export.";$("exportBar").style.width="0%";const v=$("editVideo");v.src=url;await meta(v).catch(()=>{});v.currentTime=c.start;$("modal").classList.remove("hidden")};$("close").onclick=()=>{$("editVideo").pause();$("modal").classList.add("hidden")};$("applyTrim").onclick=()=>{if(editIndex<0)return;const c=clips[editIndex],s=(+$("editStart").value)*60,e=(+$("editEnd").value)*60;c.start=Math.max(0,Math.min(duration-.2,s));c.end=Math.max(c.start+.2,Math.min(duration,e));$("editStart").value=(c.start/60).toFixed(2);$("editEnd").value=(c.end/60).toFixed(2);c.words=null;c.captionSkipped=false;c.transcript="";$("transcript").textContent="Trim changed. Prepare captions again if needed.";renderCards()};
 async function audio16k(start,end,cb){const input=new Input({formats:ALL_FORMATS,source:new BlobSource(file)});try{const track=await input.getPrimaryAudioTrack();if(!track)throw new Error("No audio track found");const sink=new AudioBufferSink(track),parts=[];let total=0,sr=0;for await(const {buffer,timestamp} of sink.buffers(start,end)){sr=buffer.sampleRate;const mono=new Float32Array(buffer.length);for(let ch=0;ch<buffer.numberOfChannels;ch++){const d=buffer.getChannelData(ch);for(let i=0;i<mono.length;i++)mono[i]+=d[i]/buffer.numberOfChannels}parts.push(mono);total+=mono.length;cb(`Extracting audio… ${Math.round(Math.max(0,Math.min(1,(timestamp-start)/(end-start)))*100)}%`)}if(!total)throw new Error("Audio could not be decoded");const all=new Float32Array(total);let o=0;for(const p of parts){all.set(p,o);o+=p.length}if(sr===16000)return all;const ratio=sr/16000,n=Math.floor(all.length/ratio),out=new Float32Array(n);for(let i=0;i<n;i++){const x=i*ratio,j=Math.floor(x),f=x-j;out[i]=(all[j]||0)*(1-f)+(all[Math.min(all.length-1,j+1)]||0)*f}return out}finally{input.dispose()}}
+async function importTransformers(){
+ const sources=[
+  "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/transformers.min.mjs",
+  "https://unpkg.com/@huggingface/transformers@3.8.1/dist/transformers.min.mjs"
+ ];
+ let lastError=null;
+ for(const src of sources){
+  try{return await import(src)}
+  catch(e){lastError=e;console.warn(`AI caption library failed from ${src}; trying backup`,e)}
+ }
+ console.warn("Both AI caption download sources failed",lastError);
+ throw new Error("AI captions could not be downloaded. Check the connection and try Prepare AI Captions again.")
+}
 async function getWhisper(cb){
  if(transcriber)return transcriber;
  if(loadingTranscriber)return await loadingTranscriber;
  loadingTranscriber=(async()=>{
   cb("Starting free Whisper AI model…");
-  const {env,pipeline}=await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/+esm");
+  const {env,pipeline}=await importTransformers();
   env.allowLocalModels=false;
   try{env.useBrowserCache=true}catch{}
   let last=-1;
@@ -78,7 +91,7 @@ async function getWhisper(cb){
 }
 async function captionsFor(i,cb){
  const c=clips[i];
- if(c.words)return c.words;
+ if(c.words&&!c.captionSkipped)return c.words;
  if(!$('captions').checked){c.words=[];return[]}
 
  const audio=await audio16k(c.start,c.end,cb),pipe=await getWhisper(cb);
@@ -128,6 +141,7 @@ async function captionsFor(i,cb){
  }
 
  c.words=out.filter(x=>x.text&&x.end>x.start);
+ c.captionSkipped=false;
  return c.words
 }
 $("prepareCaptions").onclick=async()=>{if(editIndex<0)return;const b=$("prepareCaptions");b.disabled=true;try{await captionsFor(editIndex,m=>$("transcript").textContent=m);$("transcript").textContent=clips[editIndex].transcript||"No speech detected";renderCards()}catch(e){$("transcript").textContent="Captions failed: "+(e.message||e)}finally{b.disabled=false}};
@@ -430,7 +444,16 @@ async function exportClip(i,cb){
  // 1) Whisper transcription, 2) face reframe preparation, 3) rendering.
  if($("captions").checked&&!c.words){
   cb("Transcribing with Whisper AI…");
-  await captionsFor(i,()=>cb("Transcribing with Whisper AI…"));
+  try{
+   await captionsFor(i,m=>cb(m));
+   c.captionSkipped=false
+  }catch(e){
+   console.warn("AI captions unavailable; continuing export without new captions",e);
+   c.words=[];
+   c.captionSkipped=true;
+   c.transcript="AI captions were unavailable. The video export continued without new captions.";
+   cb("AI captions unavailable · continuing without captions…")
+  }
  }
 
  const [W,H]=size();
@@ -551,6 +574,6 @@ function exportUi(message){
  }else if(message.startsWith("Finalizing smooth MP4"))pct=99;
  bar.style.width=`${Math.min(100,pct)}%`;
 }
-window.quickExport=async(i,b)=>{const s=$(`cardStatus${i}`);b.disabled=true;try{const r=await exportClip(i,m=>s.textContent=m);save(r.blob,`ClipNova-Clip-${i+1}.${r.ext}`);s.className="small ok";s.textContent=`Done · ${(r.blob.size/1048576).toFixed(1)} MB`}catch(e){s.className="small error";s.textContent=e.message||e}finally{b.disabled=false}};
-$("exportOne").onclick=async()=>{const b=$("exportOne");b.disabled=true;const old=b.textContent;b.textContent="Exporting…";$("exportBar").style.width="0%";try{const r=await exportClip(editIndex,exportUi);save(r.blob,`ClipNova-Clip-${editIndex+1}.${r.ext}`);$("exportBar").style.width="100%";$("exportStatus").className="small ok";$("exportStatus").textContent="Done";}catch(e){$("exportStatus").className="small error";$("exportStatus").textContent=e.message||e}finally{b.disabled=false;b.textContent=old}};
-$("exportAll").onclick=async()=>{const b=$("exportAll");b.disabled=true;try{for(let i=0;i<clips.length;i++){const s=$(`cardStatus${i}`),r=await exportClip(i,m=>s.textContent=`Batch: ${m}`);save(r.blob,`ClipNova-Clip-${i+1}.${r.ext}`);s.textContent="Exported";await sleep(500)}}finally{b.disabled=false}};
+window.quickExport=async(i,b)=>{const s=$(`cardStatus${i}`);b.disabled=true;try{const r=await exportClip(i,m=>s.textContent=m);save(r.blob,`ClipNova-Clip-${i+1}.${r.ext}`);s.className="small ok";s.textContent=`Done · ${(r.blob.size/1048576).toFixed(1)} MB${clips[i].captionSkipped?" · without new captions":""}`}catch(e){s.className="small error";s.textContent=e.message||e}finally{b.disabled=false}};
+$("exportOne").onclick=async()=>{const b=$("exportOne");b.disabled=true;const old=b.textContent;b.textContent="Exporting…";$("exportBar").style.width="0%";try{const r=await exportClip(editIndex,exportUi);save(r.blob,`ClipNova-Clip-${editIndex+1}.${r.ext}`);$("exportBar").style.width="100%";$("exportStatus").className="small ok";$("exportStatus").textContent=clips[editIndex].captionSkipped?"Done · without new captions":"Done";}catch(e){$("exportStatus").className="small error";$("exportStatus").textContent=e.message||e}finally{b.disabled=false;b.textContent=old}};
+$("exportAll").onclick=async()=>{const b=$("exportAll");b.disabled=true;try{for(let i=0;i<clips.length;i++){const s=$(`cardStatus${i}`),r=await exportClip(i,m=>s.textContent=`Batch: ${m}`);save(r.blob,`ClipNova-Clip-${i+1}.${r.ext}`);s.textContent=clips[i].captionSkipped?"Exported · without new captions":"Exported";await sleep(500)}}finally{b.disabled=false}};
