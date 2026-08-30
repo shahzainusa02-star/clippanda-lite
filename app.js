@@ -1,5 +1,6 @@
-import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,Output,Mp4OutputFormat,BufferTarget,CanvasSource,AudioBufferSource} from "https://cdn.jsdelivr.net/npm/mediabunny@1.42.0/+esm";
+import {Input,ALL_FORMATS,BlobSource,AudioBufferSink,VideoSampleSink,Output,Mp4OutputFormat,BufferTarget,CanvasSource,AudioBufferSource} from "https://cdn.jsdelivr.net/npm/mediabunny@1.42.0/+esm";
 const $=id=>document.getElementById(id),source=$("source"),sample=$("sample"),sctx=sample.getContext("2d",{willReadFrequently:true}),canvas=$("renderCanvas"),ctx=canvas.getContext("2d");
+source.muted=true;source.defaultMuted=true;
 const speakerSample=document.createElement("canvas"),speakerCtx=speakerSample.getContext("2d",{willReadFrequently:true});
 speakerSample.width=320;speakerSample.height=180;
 let file=null,url=null,duration=0,features=[],clips=[],editIndex=-1,detector=null,detectorTried=false,landmarker=null,landmarkerTried=false,landmarkerClock=0,transcriber=null,loadingTranscriber=null,lastFace={x:0,y:0};
@@ -48,12 +49,17 @@ window.openEdit=async i=>{editIndex=i;const c=clips[i];$("editTitle").textConten
 async function audio16k(start,end,cb){const input=new Input({formats:ALL_FORMATS,source:new BlobSource(file)});try{const track=await input.getPrimaryAudioTrack();if(!track)throw new Error("No audio track found");const sink=new AudioBufferSink(track),parts=[];let total=0,sr=0;for await(const {buffer,timestamp} of sink.buffers(start,end)){sr=buffer.sampleRate;const mono=new Float32Array(buffer.length);for(let ch=0;ch<buffer.numberOfChannels;ch++){const d=buffer.getChannelData(ch);for(let i=0;i<mono.length;i++)mono[i]+=d[i]/buffer.numberOfChannels}parts.push(mono);total+=mono.length;cb(`Extracting audio… ${Math.round(Math.max(0,Math.min(1,(timestamp-start)/(end-start)))*100)}%`)}if(!total)throw new Error("Audio could not be decoded");const all=new Float32Array(total);let o=0;for(const p of parts){all.set(p,o);o+=p.length}if(sr===16000)return all;const ratio=sr/16000,n=Math.floor(all.length/ratio),out=new Float32Array(n);for(let i=0;i<n;i++){const x=i*ratio,j=Math.floor(x),f=x-j;out[i]=(all[j]||0)*(1-f)+(all[Math.min(all.length-1,j+1)]||0)*f}return out}finally{input.dispose()}}
 async function importTransformers(){
  const sources=[
-  "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/transformers.min.mjs",
-  "https://unpkg.com/@huggingface/transformers@3.8.1/dist/transformers.min.mjs"
+  "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1",
+  "https://esm.sh/@huggingface/transformers@3.8.1",
+  "https://unpkg.com/@huggingface/transformers@3.8.1"
  ];
  let lastError=null;
  for(const src of sources){
-  try{return await import(src)}
+  try{
+   const mod=await import(src);
+   if(typeof mod.pipeline!=="function")throw new Error("Caption pipeline was not found in the downloaded module");
+   return mod
+  }
   catch(e){lastError=e;console.warn(`AI caption library failed from ${src}; trying backup`,e)}
  }
  console.warn("Both AI caption download sources failed",lastError);
@@ -67,6 +73,7 @@ async function getWhisper(cb){
   const {env,pipeline}=await importTransformers();
   env.allowLocalModels=false;
   try{env.useBrowserCache=true}catch{}
+  try{env.backends.onnx.wasm.numThreads=1}catch{}
   let last=-1;
   const progress_callback=p=>{
    try{
@@ -161,7 +168,7 @@ function overlay(){
  ).join(" ")
 }
 $("editVideo").addEventListener("timeupdate",overlay);
-function size(){const a=$("aspect").value;return a==="landscape"?[1280,720]:a==="square"?[1080,1080]:[720,1280]};function drawCover(v,cx,cy){const W=canvas.width,H=canvas.height,sw=v.videoWidth,sh=v.videoHeight,tar=W/H,src=sw/sh;let sx=0,sy=0,cw=sw,ch=sh;if(src>tar){cw=sh*tar;sx=Math.max(0,Math.min(sw-cw,cx-cw/2))}else{ch=sw/tar;sy=Math.max(0,Math.min(sh-ch,cy-ch/2))}ctx.drawImage(v,sx,sy,cw,ch,0,0,W,H)}function drawFit(v){const W=canvas.width,H=canvas.height,sw=v.videoWidth,sh=v.videoHeight;ctx.save();ctx.filter="blur(28px) brightness(.62)";let s=Math.max(W/sw,H/sh);ctx.drawImage(v,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s);ctx.restore();s=Math.min(W/sw,H/sh);ctx.drawImage(v,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s)}
+function size(){const a=$("aspect").value;return a==="landscape"?[1280,720]:a==="square"?[1080,1080]:[720,1280]};function mediaWidth(v){return v.displayWidth||v.videoWidth}function mediaHeight(v){return v.displayHeight||v.videoHeight}function drawMedia(v,...args){if(typeof v.draw==="function")v.draw(ctx,...args);else ctx.drawImage(v,...args)}function drawCover(v,cx,cy){const W=canvas.width,H=canvas.height,sw=mediaWidth(v),sh=mediaHeight(v),tar=W/H,src=sw/sh;let sx=0,sy=0,cw=sw,ch=sh;if(src>tar){cw=sh*tar;sx=Math.max(0,Math.min(sw-cw,cx-cw/2))}else{ch=sw/tar;sy=Math.max(0,Math.min(sh-ch,cy-ch/2))}drawMedia(v,sx,sy,cw,ch,0,0,W,H)}function drawFit(v){const W=canvas.width,H=canvas.height,sw=mediaWidth(v),sh=mediaHeight(v);ctx.save();ctx.filter="blur(28px) brightness(.62)";let s=Math.max(W/sw,H/sh);drawMedia(v,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s);ctx.restore();s=Math.min(W/sw,H/sh);drawMedia(v,(W-sw*s)/2,(H-sh*s)/2,sw*s,sh*s)}
 function drawText(c,t){
  if(!$("captions").checked||!c.words?.length)return;
  let k=c.words.findIndex(w=>t>=w.start&&t<=w.end);
@@ -437,8 +444,15 @@ function faceAt(path,t){
  return{x:a.x+(b.x-a.x)*u,y:a.y+(b.y-a.y)*u}
 }
 
+function pauseVisibleVideos(){
+ source.pause();
+ $("editVideo")?.pause();
+ document.querySelectorAll("#results video").forEach(v=>v.pause())
+}
+
 async function exportClip(i,cb){
  const c=clips[i];
+ pauseVisibleVideos();
 
  // Export has 3 clear visible phases:
  // 1) Whisper transcription, 2) face reframe preparation, 3) rendering.
@@ -448,11 +462,10 @@ async function exportClip(i,cb){
    await captionsFor(i,m=>cb(m));
    c.captionSkipped=false
   }catch(e){
-   console.warn("AI captions unavailable; continuing export without new captions",e);
-   c.words=[];
-   c.captionSkipped=true;
-   c.transcript="AI captions were unavailable. The video export continued without new captions.";
-   cb("AI captions unavailable · continuing without captions…")
+   c.words=null;
+   c.captionSkipped=false;
+   console.warn("AI captions failed",e);
+   throw new Error(`AI captions failed: ${e?.message||e}. To export without captions, turn off Automatic AI captions.`)
   }
  }
 
@@ -465,7 +478,7 @@ async function exportClip(i,cb){
 
  cb("Rendering… 0%");
  await seek(c.start);
- source.muted=false;
+ source.pause();source.muted=true;
 
  if(!window.VideoEncoder)
   throw new Error("Smooth MP4 export needs an updated Chrome or Edge browser");
@@ -508,44 +521,44 @@ async function exportClip(i,cb){
   audioOut.close()
  })():Promise.resolve();
 
- await source.play();
-
  const fps=30,frameDuration=1/fps,total=Math.max(frameDuration,c.end-c.start);
- let frameNumber=0,nextFrameTime=0,finished=false,renderError=null;
+ const totalFrames=Math.max(1,Math.ceil(total*fps));
+ let frameNumber=0,renderError=null,videoInput=null;
  try{
-  await new Promise((resolve,reject)=>{
-   const tick=async()=>{
-    if(finished)return;
-    try{
-     const t=Math.min(c.end,source.currentTime);
-     const relative=Math.max(0,t-c.start);
-
-     // Add every required output frame once, using exact sequential timestamps.
-     while(nextFrameTime<=relative+frameDuration/2&&nextFrameTime<total){
-      const face=faceAt(facePath,t);
-      ctx.fillStyle="#000";
-      ctx.fillRect(0,0,W,H);
-      if($("layout").value==="fit")drawFit(source);
-      else drawCover(source,face.x,face.y);
-      drawText(c,t);
-
-      await videoOut.add(nextFrameTime,Math.min(frameDuration,total-nextFrameTime),{
-       keyFrame:frameNumber%(fps*2)===0
-      });
-      frameNumber++;
-      nextFrameTime=frameNumber/fps
-     }
-
-     cb(`Rendering… ${Math.round(Math.max(0,Math.min(1,relative/total))*100)}%`);
-     if(t>=c.end||source.ended){finished=true;resolve();return}
-     requestAnimationFrame(tick)
-    }catch(e){finished=true;reject(e)}
-   };
-   requestAnimationFrame(tick)
-  });
+  // Decode frames directly from the selected file. Do not call HTMLVideoElement.play():
+  // Samsung Internet/Chrome can freeze a CPU-heavy page between face analysis
+  // and playback, interrupting play() and leaving export at Rendering 0%.
+  videoInput=new Input({formats:ALL_FORMATS,source:new BlobSource(file)});
+  const inputVideoTrack=await videoInput.getPrimaryVideoTrack();
+  if(!inputVideoTrack||!(await inputVideoTrack.canDecode()))throw new Error("Video frames could not be decoded on this browser");
+  const videoSink=new VideoSampleSink(inputVideoTrack,{hardwareAcceleration:"no-preference"});
+  function* renderTimestamps(){
+   for(let n=0;n<totalFrames;n++)yield Math.min(c.end-.000001,c.start+n*frameDuration)
+  }
+  for await(const frame of videoSink.samplesAtTimestamps(renderTimestamps())){
+   if(!frame)throw new Error("A video frame could not be decoded");
+   const relative=frameNumber*frameDuration,t=Math.min(c.end,c.start+relative);
+   try{
+    const face=faceAt(facePath,t);
+    ctx.fillStyle="#000";
+    ctx.fillRect(0,0,W,H);
+    if($("layout").value==="fit")drawFit(frame);
+    else drawCover(frame,face.x,face.y);
+    drawText(c,t);
+    await videoOut.add(relative,Math.min(frameDuration,total-relative),{
+     keyFrame:frameNumber%(fps*2)===0
+    })
+   }finally{frame.close()}
+   frameNumber++;
+   if(frameNumber===1||frameNumber%4===0||frameNumber===totalFrames){
+    cb(`Rendering… ${Math.round(frameNumber/totalFrames*100)}%`);
+    await sleep(0)
+   }
+  }
+  if(frameNumber!==totalFrames)throw new Error("Video decoding ended before the clip was complete");
  }catch(e){renderError=e}
  finally{
-  source.pause();
+  if(videoInput)videoInput.dispose();
   videoOut.close()
  }
 
