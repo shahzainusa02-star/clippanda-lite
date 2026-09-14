@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: clipnova-cloud-ai
+    runtime: python
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn backend.server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CLIPNOVA_ACCESS_CODE
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://shahzainusa02-star.github.io
+      - key: OPENAI_TRANSCRIPTION_MODEL
+        value: whisper-1
+      - key: OPENAI_ANALYSIS_MODEL
+        value: gpt-4.1-mini
