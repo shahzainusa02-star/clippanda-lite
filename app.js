@@ -73,7 +73,10 @@ async function getWhisper(cb){
   const {env,pipeline}=await importTransformers();
   env.allowLocalModels=false;
   try{env.useBrowserCache=true}catch{}
-  try{env.backends.onnx.wasm.numThreads=1}catch{}
+  try{
+   const cores=Math.max(1,navigator.hardwareConcurrency||2);
+   env.backends.onnx.wasm.numThreads=globalThis.crossOriginIsolated?Math.min(4,Math.max(1,cores-1)):1
+  }catch{}
   let last=-1;
   const progress_callback=p=>{
    try{
@@ -87,7 +90,7 @@ async function getWhisper(cb){
   };
   const model="onnx-community/whisper-tiny";
   const cpuOpts={dtype:"q4",progress_callback};
-  if("gpu" in navigator){
+  if(navigator.gpu){
    try{return await pipeline("automatic-speech-recognition",model,{dtype:"q4",device:"webgpu",progress_callback})}
    catch(e){console.warn("WebGPU Whisper failed; using browser CPU",e)}
   }
@@ -102,26 +105,23 @@ async function captionsFor(i,cb){
  if(!$('captions').checked){c.words=[];return[]}
 
  const audio=await audio16k(c.start,c.end,cb),pipe=await getWhisper(cb);
- cb('Transcribing with Whisper AI…');
-
  const code=$('captionLanguage')?.value||'en';
  const languageNames={
   en:'english',es:'spanish',de:'german',fr:'french',pt:'portuguese',
   it:'italian',ur:'urdu',hi:'hindi'
  };
 
- // Use segment timestamps. The lightweight Q4 browser model does not expose
- // cross-attention tensors required by true Whisper word timestamps.
+ // Whisper accepts up to 30 seconds per inference. Processing exact 30-second
+ // parts avoids the old 24-second windows with 4-second overlap, which could
+ // make a 2-minute clip run almost twice as much model work on a phone.
  const opts={
-  chunk_length_s:24,
-  stride_length_s:4,
   return_timestamps:true,
-  task:'transcribe'
+  task:'transcribe',
+  max_new_tokens:224,
+  num_beams:1,
+  do_sample:false
  };
  if(code!=='auto'&&languageNames[code])opts.language=languageNames[code];
-
- const r=await pipe(audio,opts);
- c.transcript=(r.text||'').replace(/\uFFFD/g,'').replace(/\s+/g,' ').trim();
 
  function cleanWord(value){
   let s=String(value||'').replace(/\uFFFD/g,'').trim();
@@ -129,19 +129,42 @@ async function captionsFor(i,cb){
   return s;
  }
 
- const out=[];
- for(const seg of (r.chunks||[])){
-  const text=String(seg.text||'').replace(/\uFFFD/g,'').trim();
-  if(!text)continue;
-  const words=text.split(/\s+/).map(cleanWord).filter(Boolean);
-  if(!words.length)continue;
-  let a=Number(seg.timestamp?.[0]),b=Number(seg.timestamp?.[1]);
-  if(!Number.isFinite(a))a=0;
-  if(!Number.isFinite(b)||b<=a)b=a+Math.max(.7,words.length*.32);
-  const segStart=c.start+a,segEnd=Math.min(c.end,c.start+b),span=Math.max(.18,segEnd-segStart),step=span/words.length;
-  words.forEach((text,n)=>out.push({text,start:segStart+n*step,end:Math.min(segEnd,segStart+(n+1)*step)}));
+ const sampleRate=16000,partSamples=sampleRate*30;
+ // Audio decoders can return a few samples beyond the requested end. Trim
+ // them so a 120-second clip stays at four parts instead of creating a fifth.
+ const expectedSamples=Math.max(1,Math.ceil((c.end-c.start)*sampleRate));
+ const speechAudio=audio.length>expectedSamples?audio.subarray(0,expectedSamples):audio;
+ const partCount=Math.max(1,Math.ceil(speechAudio.length/partSamples));
+ const out=[],transcriptParts=[];
+ cb(`Transcribing captions · part 1/${partCount} · 0%`);
+
+ for(let partIndex=0;partIndex<partCount;partIndex++){
+  const sampleStart=partIndex*partSamples,sampleEnd=Math.min(speechAudio.length,sampleStart+partSamples);
+  const part=speechAudio.subarray(sampleStart,sampleEnd),partOffset=sampleStart/sampleRate,partDuration=part.length/sampleRate;
+  const r=await pipe(part,opts);
+  const partText=String(r.text||'').replace(/\uFFFD/g,'').replace(/\s+/g,' ').trim();
+  if(partText)transcriptParts.push(partText);
+  const segments=r.chunks?.length?r.chunks:(partText?[{text:partText,timestamp:[0,partDuration]}]:[]);
+
+  for(const seg of segments){
+   const text=String(seg.text||'').replace(/\uFFFD/g,'').trim();
+   if(!text)continue;
+   const words=text.split(/\s+/).map(cleanWord).filter(Boolean);
+   if(!words.length)continue;
+   let a=Number(seg.timestamp?.[0]),b=Number(seg.timestamp?.[1]);
+   if(!Number.isFinite(a))a=0;
+   if(!Number.isFinite(b)||b<=a)b=a+Math.max(.7,words.length*.32);
+   a=Math.max(0,Math.min(partDuration,a));b=Math.max(a+.05,Math.min(partDuration,b));
+   const segStart=c.start+partOffset+a,segEnd=Math.min(c.end,c.start+partOffset+b),span=Math.max(.18,segEnd-segStart),step=span/words.length;
+   words.forEach((text,n)=>out.push({text,start:segStart+n*step,end:Math.min(segEnd,segStart+(n+1)*step)}));
+  }
+
+  const done=partIndex+1;
+  cb(`Transcribing captions · part ${done}/${partCount} · ${Math.round(done/partCount*100)}%`);
+  await sleep(0)
  }
 
+ c.transcript=transcriptParts.join(' ').replace(/\s+/g,' ').trim();
  if(!out.length&&c.transcript){
   const words=c.transcript.split(/\s+/).map(cleanWord).filter(Boolean),span=Math.max(.2,c.end-c.start),step=span/Math.max(1,words.length);
   words.forEach((text,n)=>out.push({text,start:c.start+n*step,end:Math.min(c.end,c.start+(n+1)*step)}));
@@ -577,7 +600,14 @@ function exportUi(message){
  s.className="small";
  s.textContent=message;
  let pct=0;
- if(message.startsWith("Transcribing with Whisper AI"))pct=28;
+ if(message.startsWith("Extracting audio")){
+  const m=message.match(/(\d+)%/);pct=3+(m?Math.round(+m[1]*.05):0);
+ }else if(message.startsWith("Downloading Whisper AI model")){
+  const m=message.match(/(\d+)%/);pct=8+(m?Math.round(+m[1]*.20):0);
+ }else if(message.startsWith("Starting")||message.startsWith("Whisper AI model"))pct=8;
+ else if(message.startsWith("Transcribing captions")){
+  const m=message.match(/(\d+)%/);pct=28+(m?Math.round(+m[1]*.08):0);
+ }else if(message.startsWith("Transcribing with Whisper AI"))pct=28;
  else if(message.startsWith("Preparing face reframe")){
   const m=message.match(/(\d+)%/);
   pct=36+(m?Math.round(+m[1]*.24):4);
