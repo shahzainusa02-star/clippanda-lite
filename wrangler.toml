@@ -1,0 +1,9 @@
+name = "clipnova-cloud-ai"
+main = "cloudflare/worker.js"
+compatibility_date = "2026-09-14"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ALLOWED_ORIGIN = "https://shahzainusa02-star.github.io"
+OPENAI_TRANSCRIPTION_MODEL = "whisper-1"
+OPENAI_ANALYSIS_MODEL = "gpt-4.1-mini"
